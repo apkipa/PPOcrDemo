@@ -1,0 +1,58 @@
+﻿<Page
+    x:Class="PPOcrDemo.MainPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:PPOcrDemo"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <Grid>
+        <VisualStateManager.VisualStateGroups>
+            <VisualStateGroup x:Name="LoadingProgressIndications">
+                <VisualState x:Name="IndicationIdle" />
+                <VisualState x:Name="IndicationLoading">
+                    <VisualState.Setters>
+                        <Setter Target="LoadingProgressIndicationGrid.Visibility" Value="Visible" />
+                        <Setter Target="LoadingProgressIndicationRing.IsActive" Value="True" />
+                    </VisualState.Setters>
+                </VisualState>
+            </VisualStateGroup>
+        </VisualStateManager.VisualStateGroups>
+        
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="400" />
+        </Grid.ColumnDefinitions>
+
+        <Grid Grid.Column="0" Background="{ThemeResource SystemControlAcrylicWindowBrush}" AllowDrop="True"
+              DragOver="OcrImageArea_DragOver" Drop="OcrImageArea_Drop" KeyboardAcceleratorPlacementMode="Hidden">
+            <Grid.KeyboardAccelerators>
+                <KeyboardAccelerator Modifiers="Control" Key="V" Invoked="OcrImageArea_OnControlV" />
+            </Grid.KeyboardAccelerators>
+            
+            <TextBlock Grid.Column="0" Text="将图片拖放到此处" HorizontalAlignment="Center" VerticalAlignment="Center" />
+            <Image x:Name="OcrInputImage" />
+        </Grid>
+        <ScrollViewer Grid.Column="1">
+            <StackPanel Orientation="Vertical" Spacing="4" Padding="8">
+                <TextBlock Text="PPOcrDemo" FontSize="24" FontWeight="Bold" Margin="0,0,0,4" />
+                <ComboBox x:Name="InferenceDeviceComboBox" Header="选择推理设备" />
+                <CheckBox x:Name="EnableTextDetectionCheckBox" Content="启用文本检测" IsChecked="True" />
+                <CheckBox x:Name="EnableTextRecognitionCheckBox" Content="启用文本识别" IsChecked="True" />
+                <Button x:Name="StartOcrButton" Content="开始 OCR" Click="StartOcrButton_Click" />
+                <Button x:Name="ClearOcrOutput" Content="清空识别结果" Click="ClearOcrOutput_Click" />
+                <TextBlock x:Name="OcrTimingTextBlock" />
+                <TextBox x:Name="OcrOutputTextBox" Header="OCR 识别文本" AcceptsReturn="True" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <Grid x:Name="LoadingProgressIndicationGrid" Grid.ColumnSpan="2" Background="#80000000" Visibility="Collapsed">
+            <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"
+                        CornerRadius="8" Background="#80FFFFFF" Padding="32,28">
+                <ProgressRing x:Name="LoadingProgressIndicationRing" Width="40" Height="40" IsActive="False" />
+                <TextBlock Text="加载中..." />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Page>
