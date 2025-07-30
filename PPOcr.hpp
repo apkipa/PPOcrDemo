@@ -2,14 +2,24 @@
 
 #include "pch.h"
 
+#ifdef USE_WINML_NUGET
+namespace mam = winrt::Microsoft::AI::MachineLearning;
+#else
+namespace mam = winrt::Windows::AI::MachineLearning;
+#endif
+
 namespace PPOcr {
     struct TextRecognitionFragment {
         winrt::hstring text;
         float confidence;
     };
 
+    struct TextRecognitionFragmentWithBox : TextRecognitionFragment {
+        winrt::Windows::Foundation::Rect bounding_box;
+    };
+
     struct TextRecognitionOutput {
-        std::vector<TextRecognitionFragment> entries;
+        std::vector<TextRecognitionFragmentWithBox> entries;
     };
 
     struct TextDetector {
@@ -18,14 +28,23 @@ namespace PPOcr {
 
         operator bool() const { return (bool)m_model; }
 
-        void set_device(winrt::Windows::AI::MachineLearning::LearningModelDevice const& device) {
+        void set_device(mam::LearningModelDevice const& device) {
             m_device = device;
+            m_session = nullptr; // Reset session to reinitialize with new device
         }
 
+        std::vector<winrt::Windows::Foundation::Rect> detect(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+        winrt::Windows::Graphics::Imaging::SoftwareBitmap detect_mask(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+
     private:
-        winrt::Windows::AI::MachineLearning::LearningModel m_model{ nullptr };
-        winrt::Windows::AI::MachineLearning::LearningModelDevice m_device{ nullptr };
-        winrt::Windows::AI::MachineLearning::LearningModelSession m_session{ nullptr };
+        void InitSession();
+        std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> DetectMaskImage(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+
+        mam::LearningModel m_model{ nullptr };
+        mam::LearningModelDevice m_device{ nullptr };
+        mam::LearningModelSession m_session{ nullptr };
+        winrt::hstring m_inTensorName, m_outTensorName;
+        mam::TensorFloat m_inTensor{ nullptr }, m_outTensor{ nullptr };
     };
 
     struct TextRecognizer {
@@ -34,7 +53,7 @@ namespace PPOcr {
 
         operator bool() const { return (bool)m_model; }
 
-        void set_device(winrt::Windows::AI::MachineLearning::LearningModelDevice const& device) {
+        void set_device(mam::LearningModelDevice const& device) {
             m_device = device;
             m_session = nullptr; // Reset session to reinitialize with new device
         }
@@ -47,17 +66,17 @@ namespace PPOcr {
         void InitDict(winrt::hstring const& dictPath);
 
         std::vector<winrt::hstring> m_ctcDict;
-        winrt::Windows::AI::MachineLearning::LearningModel m_model{ nullptr };
-        winrt::Windows::AI::MachineLearning::LearningModelDevice m_device{ nullptr };
-        winrt::Windows::AI::MachineLearning::LearningModelSession m_session{ nullptr };
+        mam::LearningModel m_model{ nullptr };
+        mam::LearningModelDevice m_device{ nullptr };
+        mam::LearningModelSession m_session{ nullptr };
         winrt::hstring m_inTensorName, m_outTensorName;
-        winrt::Windows::AI::MachineLearning::TensorFloat m_inTensor{ nullptr }, m_outTensor{ nullptr };
+        mam::TensorFloat m_inTensor{ nullptr }, m_outTensor{ nullptr };
     };
 
     struct PPOcr {
         PPOcr() : m_detector(nullptr), m_recognizer(nullptr) {}
 
-        void set_device(winrt::Windows::AI::MachineLearning::LearningModelDevice const& device) {
+        void set_device(mam::LearningModelDevice const& device) {
             m_detector.set_device(device);
             m_recognizer.set_device(device);
         }
@@ -75,6 +94,6 @@ namespace PPOcr {
     void GlobalInit();
     std::vector<winrt::hstring> EnumerateD3D12Devices();
     winrt::Windows::Foundation::IAsyncOperation<winrt::Windows::Foundation::Collections::IVector<winrt::hstring>> EnumerateD3D12DevicesAsync();
-    winrt::Windows::AI::MachineLearning::LearningModelDevice CreateLearningModelDevice(winrt::hstring const& device);
+    mam::LearningModelDevice CreateLearningModelDevice(winrt::hstring const& device);
 
 }

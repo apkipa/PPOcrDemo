@@ -108,10 +108,16 @@ namespace winrt::PPOcrDemo::implementation {
     }
 
     void MainPage::StartOcrButton_Click(IInspectable const& sender, RoutedEventArgs const& e) {
-        DoOcrAsync();
+        DoOcrAsync(false);
+    }
+
+    void MainPage::ShowOcrMaskButton_Click(IInspectable const& sender, RoutedEventArgs const& e) {
+        DoOcrAsync(true);
     }
 
     void MainPage::ClearOcrOutput_Click(IInspectable const& sender, RoutedEventArgs const& e) {
+        OcrInputMaskImage().Source(nullptr);
+
         OcrOutputTextBox().Text({});
         OcrTimingTextBlock().Text({});
     }
@@ -142,8 +148,11 @@ namespace winrt::PPOcrDemo::implementation {
             auto devSelection = GetSelectedInferenceDevice();
             co_await resume_background();
             auto dev = PPOcr::CreateLearningModelDevice(devSelection);
+            auto textDetector = PPOcr::TextDetector(L"models/server_det_infer.onnx");
             auto textRecognizer = PPOcr::TextRecognizer(L"models/server_rec_infer.onnx", L"models/ppocrv5_dict.txt");
+            textDetector.set_device(dev);
             textRecognizer.set_device(dev);
+            m_textDetector = std::move(textDetector);
             m_textRecognizer = std::move(textRecognizer);
         }
         catch (...) {
@@ -182,7 +191,10 @@ namespace winrt::PPOcrDemo::implementation {
             cd.Title(box_value(header));
             cd.Content(box_value(errMsg));
             cd.CloseButtonText(L"确定");
-            std::ignore = cd.ShowAsync();
+            try {
+                std::ignore = cd.ShowAsync();
+            }
+            catch (...) {}
         };
         auto disp = Dispatcher();
         if (disp.HasThreadAccess()) {
@@ -215,7 +227,7 @@ namespace winrt::PPOcrDemo::implementation {
         }
     }
 
-    IAsyncAction MainPage::DoOcrAsync() {
+    IAsyncAction MainPage::DoOcrAsync(bool showMask) {
         auto self = get_strong();
 
         {
@@ -226,6 +238,8 @@ namespace winrt::PPOcrDemo::implementation {
             if (needReinit) {
                 m_previousDeviceSelection = std::move(selection);
                 co_await ReinitOcrModelsAsync(false);
+
+                OcrInputMaskImage().Source(nullptr);
             }
         }
 
@@ -234,26 +248,75 @@ namespace winrt::PPOcrDemo::implementation {
             co_return;
         }
 
-        auto loadSess = MakeLoadSession();
-
         bool isTextDetectionEnabled = unbox_value_or<bool>(EnableTextDetectionCheckBox().IsChecked(), false);
         bool isTextRecognitionEnabled = unbox_value_or<bool>(EnableTextRecognitionCheckBox().IsChecked(), false);
 
+        if (!isTextRecognitionEnabled && !isTextDetectionEnabled) {
+            // Neither text detection nor recognition is enabled, do nothing
+            co_return;
+        }
+
+        auto loadSess = MakeLoadSession();
+
         try {
+            auto dq = DispatcherQueue::GetForCurrentThread();
+
             co_await resume_background();
             auto t0 = std::chrono::high_resolution_clock::now();
-            auto output = m_textRecognizer.recognize(m_inputImage);
-            auto t1 = std::chrono::high_resolution_clock::now();
-            co_await Dispatcher();
+            if (showMask) {
+                auto output = m_textDetector.detect_mask(m_inputImage);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                co_await resume_foreground(dq);
 
-            OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", std::chrono::duration<double, std::milli>(t1 - t0).count()));
+                output = SoftwareBitmap::Convert(output, BitmapPixelFormat::Bgra8, BitmapAlphaMode::Ignore);
+                auto source = SoftwareBitmapSource();
+                co_await source.SetBitmapAsync(output);
 
-            std::wstring outputText;
-            outputText += std::format(L"{:.3f}:\n{}\n", output.confidence, output.text);
-            if (!outputText.empty()) {
-                outputText.pop_back(); // Remove the last newline character
+                OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+                OcrInputMaskImage().Source(source);
             }
-            OcrOutputTextBox().Text(outputText);
+            else if (isTextDetectionEnabled && isTextRecognitionEnabled) {
+                // Both text detection and recognition enabled
+                auto t1 = std::chrono::high_resolution_clock::now();
+            }
+            else if (isTextDetectionEnabled && !isTextRecognitionEnabled) {
+                // Only text detection enabled
+                auto output = m_textDetector.detect(m_inputImage);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                dq.TryEnqueue([this, self = std::move(self), timing, output = std::move(output)] {
+                    OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+
+                    std::wstring outputText;
+                    for (auto rect : output) {
+                        outputText += std::format(L"检测到文本区域: ({}, {}, {}, {})\n",
+                            rect.X, rect.Y, rect.Width, rect.Height);
+                    }
+                    if (!outputText.empty()) {
+                        outputText.pop_back(); // Remove the last newline character
+                    }
+                    OcrOutputTextBox().Text(outputText);
+                });
+            }
+            else if (!isTextDetectionEnabled && isTextRecognitionEnabled) {
+                // Only text recognition enabled
+                auto output = m_textRecognizer.recognize(m_inputImage);
+                auto t1 = std::chrono::high_resolution_clock::now();
+                auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
+                dq.TryEnqueue([this, self = std::move(self), timing, output = std::move(output)] {
+                    OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+
+                    std::wstring outputText;
+                    outputText += std::format(L"{:.3f}:\n{}\n", output.confidence, output.text);
+                    if (!outputText.empty()) {
+                        outputText.pop_back(); // Remove the last newline character
+                    }
+                    OcrOutputTextBox().Text(outputText);
+                });
+            }
         }
         catch (...) {
             ReportExceptionAsDialog(L"无法执行 OCR");

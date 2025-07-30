@@ -34,12 +34,10 @@
 #include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.ApplicationModel.DataTransfer.h>
-#include <winrt/Windows.AI.MachineLearning.h>
 #include <winrt/Windows.Graphics.h>
 #include <winrt/Windows.Graphics.Imaging.h>
 
 #include <windows.graphics.imaging.interop.h>
-#include <windows.ai.machinelearning.native.h>
 
 #include <d3d12.h>
 #include <dxgi1_2.h>
@@ -53,3 +51,13 @@
 #include <winrt/Tenkai.h>
 #include <winrt/Tenkai.UI.Xaml.h>
 #include <winrt/Tenkai.Storage.h>
+
+//#define USE_WINML_NUGET
+
+#ifdef USE_WINML_NUGET
+#include <winrt/Microsoft.AI.MachineLearning.h>
+#include <Microsoft.AI.MachineLearning.Native.h>
+#else
+#include <winrt/Windows.AI.MachineLearning.h>
+#include <windows.ai.machinelearning.native.h>
+#endif

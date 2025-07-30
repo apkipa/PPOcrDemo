@@ -33,6 +33,7 @@
             
             <TextBlock Grid.Column="0" Text="将图片拖放到此处" HorizontalAlignment="Center" VerticalAlignment="Center" />
             <Image x:Name="OcrInputImage" />
+            <Image x:Name="OcrInputMaskImage" />
         </Grid>
         <ScrollViewer Grid.Column="1">
             <StackPanel Orientation="Vertical" Spacing="4" Padding="8">
@@ -41,6 +42,16 @@
                 <CheckBox x:Name="EnableTextDetectionCheckBox" Content="启用文本检测" IsChecked="True" />
                 <CheckBox x:Name="EnableTextRecognitionCheckBox" Content="启用文本识别" IsChecked="True" />
                 <Button x:Name="StartOcrButton" Content="开始 OCR" Click="StartOcrButton_Click" />
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    
+                    <Button x:Name="ShowOcrMaskButton" Content="显示 OCR 掩码图" Click="ShowOcrMaskButton_Click" />
+                    <Slider Grid.Column="1" Value="{x:Bind OcrInputMaskImage.Opacity,Mode=TwoWay}" Minimum="0" Maximum="1"
+                            StepFrequency="0.00390625" Margin="4,0" />
+                </Grid>
                 <Button x:Name="ClearOcrOutput" Content="清空识别结果" Click="ClearOcrOutput_Click" />
                 <TextBlock x:Name="OcrTimingTextBlock" />
                 <TextBox x:Name="OcrOutputTextBox" Header="OCR 识别文本" AcceptsReturn="True" />

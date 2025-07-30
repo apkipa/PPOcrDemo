@@ -4,8 +4,9 @@
 using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Foundation::Collections;
-using namespace Windows::AI::MachineLearning;
 using namespace Windows::Graphics::Imaging;
+
+using namespace mam;
 
 static bool g_DxGenericMLSupport{};
 static bool g_DxUseCore{};
@@ -222,6 +223,21 @@ com_ptr<IWICBitmap> SoftwareBitmapToWICBitmap(SoftwareBitmap const& bitmap) {
     return result;
 }
 
+// Source: https://devblogs.microsoft.com/oldnewthing/20230414-00/?p=108051
+SoftwareBitmap ToSoftwareBitmap(IWICBitmap* wicBitmap) {
+    SoftwareBitmap bitmap{ nullptr };
+
+    auto native = create_instance<
+        ISoftwareBitmapNativeFactory>(
+            CLSID_SoftwareBitmapNativeFactory);
+
+    check_hresult(native->CreateFromWICBitmap(
+        wicBitmap, true, guid_of<SoftwareBitmap>(),
+        put_abi(bitmap)));
+
+    return bitmap;
+}
+
 struct WICBitmapSize {
     uint32_t width, height;
 };
@@ -252,10 +268,280 @@ com_ptr<IWICBitmap> ResizeWICBitmapByHeight(com_ptr<IWICBitmap> const& bmp, uint
     return ResizeWICBitmap(bmp, newWidth, newHeight);
 }
 
+/// <summary>
+/// Finds contours in the provided image.
+/// </summary>
+/// <typeparam name="G">fn(x: u32, y: u32) -> bool</typeparam>
+/// <typeparam name="F">fn(std::vector<std::pair<u32, u32>>)</typeparam>
+/// <param name="width"></param>
+/// <param name="height"></param>
+/// <param name="bmpGetter">The pixel getter of the image.</param>
+/// <param name="f"></param>
+template <typename G, typename F>
+void FindContours(uint32_t width, uint32_t height, G&& bmpGetter, F&& f) {
+    // 8 directions: (dx, dy)
+    constexpr int dx[8] = { 1, 1, 0, -1, -1, -1, 0, 1 };
+    constexpr int dy[8] = { 0, -1, -1, -1, 0, 1, 1, 1 };
+    // Label image: 0=background, 1=visited/contour
+    std::vector<uint8_t> label(width * height, 0);
+
+    auto get = [&](int x, int y) -> bool {
+        return x >= 0 && x < (int)width && y >= 0 && y < (int)height && bmpGetter(x, y);
+    };
+    auto getLabel = [&](int x, int y) -> uint8_t& {
+        return label[y * width + x];
+    };
+
+    for (uint32_t y = 0; y < height; y++) {
+        for (uint32_t x = 0; x < width; x++) {
+            if (!get(x, y) || getLabel(x, y)) { continue; }
+            // Start of a new contour
+            std::vector<std::pair<uint32_t, uint32_t>> contour;
+            int sx = x, sy = y, px = x, py = y, dir = 7; // Start direction: left
+            bool closed = false;
+            do {
+                contour.emplace_back(px, py);
+                getLabel(px, py) = 1;
+                int ndir = (dir + 1) % 8;
+                bool found = false;
+                for (int k = 0; k < 8; k++) {
+                    int nx = px + dx[ndir], ny = py + dy[ndir];
+                    if (get(nx, ny) && !getLabel(nx, ny)) {
+                        px = nx; py = ny; dir = (ndir + 6) % 8; // Next search direction
+                        found = true;
+                        break;
+                    }
+                    ndir = (ndir + 1) % 8;
+                }
+                if (!found) {
+                    // Isolated point or closed
+                    closed = (px == sx && py == sy);
+                    break;
+                }
+            } while (!(px == sx && py == sy));
+            if (!contour.empty()) {
+                f(std::move(contour));
+            }
+        }
+    }
+}
+
+struct BoundingBox {
+    std::pair<uint32_t, uint32_t> topLeft;     // Left-top corner
+    std::pair<uint32_t, uint32_t> topRight;    // Right-top corner
+    std::pair<uint32_t, uint32_t> bottomRight; // Right-bottom corner
+    std::pair<uint32_t, uint32_t> bottomLeft;  // Left-bottom corner
+};
+
+/// <summary>
+/// 查找图像中的轮廓区域，返回每个区域的外接矩形（四个角点）。
+/// <typeparam name="G">fn(x: u32, y: u32) -> bool</typeparam>
+/// <typeparam name="F">fn(BoundingBox)</typeparam>
+/// <param name="width"></param>
+/// <param name="height"></param>
+/// <param name="bmpGetter">像素获取器</param>
+/// <param name="f">回调，每个区域调用一次</param>
+template <typename G, typename F>
+void FindBoundingBoxes(uint32_t width, uint32_t height, G&& bmpGetter, F&& f) {
+    FindContours(width, height, std::forward<G>(bmpGetter), [&](std::vector<std::pair<uint32_t, uint32_t>>&& contour) {
+        if (contour.empty()) return;
+        uint32_t minX = contour[0].first, maxX = contour[0].first;
+        uint32_t minY = contour[0].second, maxY = contour[0].second;
+        for (const auto& [x, y] : contour) {
+            if (x < minX) { minX = x; }
+            if (x > maxX) { maxX = x; }
+            if (y < minY) { minY = y; }
+            if (y > maxY) { maxY = y; }
+        }
+        // 以左上、右上、右下、左下顺序返回
+        BoundingBox box{
+            { minX, minY }, // 左上角
+            { maxX, minY }, // 右上角
+            { maxX, maxY }, // 右下角
+            { minX, maxY }  // 左下角
+        };
+        f(std::move(box));
+    });
+}
+
 #define BEGIN_NAMESPACE(x) namespace x {
 #define END_NAMESPACE }
 
 BEGIN_NAMESPACE(PPOcr)
+
+TextDetector::TextDetector(hstring const& model_path) : m_model(nullptr), m_device(nullptr) {
+    auto model = LearningModel::LoadFromFilePath(model_path);
+    auto inFeatures = model.InputFeatures();
+    auto outFeatures = model.OutputFeatures();
+    if (inFeatures.Size() != 1 || outFeatures.Size() != 1) {
+        throw hresult_error(E_FAIL, L"Model must have exactly one input and one output feature.");
+    }
+    auto inFeatureDesc = inFeatures.GetAt(0);
+    auto outFeatureDesc = outFeatures.GetAt(0);
+    if (inFeatureDesc.Kind() != LearningModelFeatureKind::Tensor || outFeatureDesc.Kind() != LearningModelFeatureKind::Tensor) {
+        throw hresult_error(E_FAIL, L"Model must have a tensor input and a tensor output feature.");
+    }
+    auto inTensorDesc = inFeatureDesc.as<TensorFeatureDescriptor>();
+    auto outTensorDesc = outFeatureDesc.as<TensorFeatureDescriptor>();
+    if (inTensorDesc.TensorKind() != TensorKind::Float || outTensorDesc.TensorKind() != TensorKind::Float) {
+        throw hresult_error(E_FAIL, L"Model must have a float32 tensor input and a float32 tensor output feature.");
+    }
+    if (!VectorEquals(inTensorDesc.Shape(), { -1, 3, -1, -1 })) {
+        throw hresult_error(E_FAIL, L"Model input tensor shape must be [*, 3, *, *].");
+    }
+    if (auto shape = outTensorDesc.Shape(); !VectorEquals(shape, { -1, 1, -1, -1 }) && !VectorEquals(shape, { -1, -1, -1, -1 })) {
+        throw hresult_error(E_FAIL, L"Model output tensor shape must be [*, 1, *, *].");
+    }
+
+    // OK
+    m_inTensorName = inFeatureDesc.Name();
+    m_outTensorName = outFeatureDesc.Name();
+    m_model = std::move(model);
+}
+
+std::vector<Rect> TextDetector::detect(SoftwareBitmap const& image) {
+    InitSession();
+
+    auto [imgMask, maskWidth, maskHeight] = DetectMaskImage(image);
+
+    std::vector<Rect> results;
+    FindBoundingBoxes(maskWidth, maskHeight, [&](uint32_t x, uint32_t y) -> bool {
+        // Check if the pixel is above the threshold
+        return imgMask[y * maskWidth + x] != 0;
+    }, [&](BoundingBox&& box) {
+        // Convert the bounding box to Rect format
+        // The coordinates are in (x, y) format
+        Rect rect{
+            static_cast<float>(box.topLeft.first),
+            static_cast<float>(box.topLeft.second),
+            static_cast<float>(box.bottomRight.first - box.topLeft.first),
+            static_cast<float>(box.bottomRight.second - box.topLeft.second)
+        };
+        results.push_back(rect);
+    });
+
+    return results;
+}
+
+SoftwareBitmap TextDetector::detect_mask(SoftwareBitmap const& image) {
+    InitSession();
+
+    auto imgWidth = (uint32_t)image.PixelWidth();
+    auto imgHeight = (uint32_t)image.PixelHeight();
+    auto [imgMask, maskWidth, maskHeight] = DetectMaskImage(image);
+
+    SoftwareBitmap outImage(BitmapPixelFormat::Gray8, imgWidth, imgHeight);
+    auto buffer = outImage.LockBuffer(BitmapBufferAccessMode::Write);
+    auto planeDescription = buffer.GetPlaneDescription(0);
+    auto stride = planeDescription.Stride;
+    auto reference = buffer.CreateReference();
+    auto ptr = reference.data();
+    for (uint32_t y = 0; y < std::min(imgHeight, maskHeight); y++) {
+        for (uint32_t x = 0; x < std::min(imgWidth, maskWidth); x++) {
+            // Set the pixel value based on the mask
+            uint8_t value = imgMask[y * maskWidth + x];
+            ptr[y * stride + x] = value;
+        }
+    }
+
+    return outImage;
+}
+
+std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> TextDetector::DetectMaskImage(SoftwareBitmap const& image) {
+    // Get pointer to the image data
+    auto bmp = SoftwareBitmapToWICBitmap(image);
+    auto [bmpWidth, bmpHeight] = GetWICBitmapSize(bmp);
+    com_ptr<IWICBitmapLock> bmpLock;
+    WICRect rect{ 0, 0, (INT)bmpWidth, (INT)bmpHeight };
+    check_hresult(bmp->Lock(&rect, WICBitmapLockRead, bmpLock.put()));
+    /*UINT stride;
+    check_hresult(bmpLock->GetStride(&stride));*/
+    BYTE* bmpData;
+    UINT bmpDataSize;
+    check_hresult(bmpLock->GetDataPointer(&bmpDataSize, &bmpData));
+    if (!bmpData) {
+        throw hresult_error(E_FAIL, L"Failed to get bitmap data pointer.");
+    }
+    assert(bmpDataSize == bmpWidth * bmpHeight * 4); // Assuming BGRA format
+
+    // Prepare the input tensor of shape [batch_size, channels (3), height, width]
+    // Resize the image to a multiple of 32 pixels in height and width as required by the model
+    auto inHeight = (bmpHeight + 31) / 32 * 32;
+    auto inWidth = (bmpWidth + 31) / 32 * 32;
+    inHeight = std::max(inHeight, 32u); // Ensure height is at least 32
+    inWidth = std::max(inWidth, 32u); // Ensure width is at least 32
+    m_inTensor = TensorFloat::CreateFromArray(
+        { 1, 3, inHeight, inWidth }, // Shape: [1, 3, height, width]
+        {});
+    m_outTensor = TensorFloat::Create();
+    BYTE* tensorDataRaw;
+    UINT tensorCap;
+    check_hresult(m_inTensor.as<ITensorNative>()->GetBuffer(&tensorDataRaw, &tensorCap));
+    assert(tensorCap >= 1 * 3 * inHeight * inWidth * sizeof(float));
+    auto tensorData = reinterpret_cast<float*>(tensorDataRaw);
+    // Convert from B8G8R8A8 to float32[1, 3, height, width]
+    for (uint32_t y = 0; y < std::min(bmpHeight, inHeight); y++) {
+        for (uint32_t x = 0; x < std::min(bmpWidth, inWidth); x++) {
+            // Normalize pixel values to ImageNet range
+            // NOTE: Here are proper BGR-ordered params, see https://github.com/PaddlePaddle/PaddleOCR/issues/6070
+            float scale = 1.0f / 255.0f; // Scale to [0, 1]
+            float means[] = { 0.485f, 0.456f, 0.406f }; // ImageNet means for BGR
+            float stds[] = { 0.229f, 0.224f, 0.225f }; // ImageNet stds for BGR
+            auto srcIndex = (y * bmpWidth + x) * 4;
+            tensorData[0 * inHeight * inWidth + y * inWidth + x] = (bmpData[srcIndex + 0] * scale - means[0]) / stds[0]; // B
+            tensorData[1 * inHeight * inWidth + y * inWidth + x] = (bmpData[srcIndex + 1] * scale - means[1]) / stds[1]; // G
+            tensorData[2 * inHeight * inWidth + y * inWidth + x] = (bmpData[srcIndex + 2] * scale - means[2]) / stds[2]; // R
+        }
+    }
+
+    // Do inference
+    m_session.EvaluateFeatures({ { m_inTensorName, m_inTensor }, { m_outTensorName, m_outTensor } }, {});
+
+    // Get the output tensor of shape [batch_size, channels, height, width]
+    auto outShapeObj = m_outTensor.Shape();
+    uint32_t outShape[4] = { (uint32_t)outShapeObj.GetAt(0), (uint32_t)outShapeObj.GetAt(1), (uint32_t)outShapeObj.GetAt(2), (uint32_t)outShapeObj.GetAt(3) };
+    check_hresult(m_outTensor.as<ITensorNative>()->GetBuffer(&tensorDataRaw, &tensorCap));
+    tensorData = reinterpret_cast<float*>(tensorDataRaw);
+    assert(tensorCap >= outShape[0] * outShape[1] * outShape[2] * outShape[3] * sizeof(float));
+    assert(outShape[0] == 1); // Batch size must be 1
+    assert(outShape[1] == 1); // Channels must be 1 (binary mask)
+
+    const float threshold = 0.7f;
+    auto outHeight = outShape[2];
+    auto outWidth = outShape[3];
+    std::vector<uint8_t> maskData(outHeight * outWidth, 0);
+    for (uint32_t y = 0; y < outHeight; y++) {
+        for (uint32_t x = 0; x < outWidth; x++) {
+            // Check if the pixel is above the threshold
+            if (tensorData[y * outWidth + x] > threshold) {
+                maskData[y * outWidth + x] = 255; // Set to white
+            } else {
+                maskData[y * outWidth + x] = 0; // Set to black
+            }
+        }
+    }
+
+    return { std::move(maskData), outWidth, outHeight }; // Return mask data and dimensions
+}
+
+void TextDetector::InitSession() {
+    if (m_session) {
+        // If the session already exists, we can reuse it
+        return;
+    }
+
+    if (!m_model) {
+        throw hresult_error(E_FAIL, L"Model is invalid.");
+    }
+    if (!m_device) {
+        throw hresult_error(E_FAIL, L"Device is invalid.");
+    }
+    // Create a LearningModelSession with the model and device
+    auto session = LearningModelSession(m_model, m_device);
+
+    // OK
+    m_session = std::move(session);
+}
 
 TextRecognizer::TextRecognizer(hstring const& model_path, hstring const& dict_path) : TextRecognizer(nullptr) {
     InitDict(dict_path);
@@ -359,7 +645,8 @@ TextRecognitionFragment TextRecognizer::recognize(SoftwareBitmap const& image) {
             if (prevArgmax != argmax) {
                 currentEntries.emplace_back(argmax, confidence);
             }
-        } else {
+        }
+        else {
             currentEntries.emplace_back(argmax, confidence);
         }
 
@@ -392,9 +679,6 @@ void TextRecognizer::InitSession() {
     }
     // Create a LearningModelSession with the model and device
     auto session = LearningModelSession(m_model, m_device);
-    if (!session) {
-        throw hresult_error(E_FAIL, L"Failed to create LearningModelSession.");
-    }
 
     // OK
     m_session = std::move(session);
