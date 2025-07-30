@@ -237,7 +237,8 @@ com_ptr<IWICBitmap> ResizeWICBitmap(com_ptr<IWICBitmap> const& bmp, uint32_t wid
     com_ptr<IWICBitmapScaler> scaler;
     check_hresult(factory->CreateBitmapScaler(scaler.put()));
     // Initialize the scaler with the bitmap and the new size
-    check_hresult(scaler->Initialize(bmp.get(), width, height, WICBitmapInterpolationMode::WICBitmapInterpolationModeFant));
+    //check_hresult(scaler->Initialize(bmp.get(), width, height, WICBitmapInterpolationMode::WICBitmapInterpolationModeFant));
+    check_hresult(scaler->Initialize(bmp.get(), width, height, WICBitmapInterpolationMode::WICBitmapInterpolationModeLinear));
     // Create a new bitmap to hold the resized image
     com_ptr<IWICBitmap> resizedBmp;
     check_hresult(factory->CreateBitmapFromSource(scaler.get(), WICBitmapCreateCacheOption::WICBitmapNoCache, resizedBmp.put()));
@@ -288,7 +289,7 @@ TextRecognizer::TextRecognizer(hstring const& model_path, hstring const& dict_pa
     m_model = std::move(model);
 }
 
-TextRecognitionOutput TextRecognizer::recognize(SoftwareBitmap const& image) {
+TextRecognitionFragment TextRecognizer::recognize(SoftwareBitmap const& image) {
     InitSession();
 
     // Get pointer to the image data
@@ -296,7 +297,7 @@ TextRecognitionOutput TextRecognizer::recognize(SoftwareBitmap const& image) {
     bmp = ResizeWICBitmapByHeight(bmp, 48);
     auto [bmpWidth, bmpHeight] = GetWICBitmapSize(bmp);
     com_ptr<IWICBitmapLock> bmpLock;
-    WICRect rect{ 0, 0, bmpWidth, bmpHeight };
+    WICRect rect{ 0, 0, (INT)bmpWidth, (INT)bmpHeight };
     check_hresult(bmp->Lock(&rect, WICBitmapLockRead, bmpLock.put()));
     /*UINT stride;
     check_hresult(bmpLock->GetStride(&stride));*/
@@ -319,8 +320,8 @@ TextRecognitionOutput TextRecognizer::recognize(SoftwareBitmap const& image) {
     assert(tensorCap >= 1 * 3 * 48 * bmpWidth * sizeof(float));
     auto tensorData = reinterpret_cast<float*>(tensorDataRaw);
     // Convert from B8G8R8A8 to float32[1, 3, 48, width]
-    for (auto y = 0; y < 48; ++y) {
-        for (auto x = 0; x < bmpWidth; ++x) {
+    for (uint32_t y = 0; y < 48; y++) {
+        for (uint32_t x = 0; x < bmpWidth; x++) {
             // Copy pixel data to the tensor
             auto srcIndex = (y * bmpWidth + x) * 4;
             tensorData[0 * 48 * bmpWidth + y * bmpWidth + x] = bmpData[srcIndex + 0] / 255.0f * 2.0f - 1.0f; // B
@@ -339,22 +340,30 @@ TextRecognitionOutput TextRecognizer::recognize(SoftwareBitmap const& image) {
     assert(tensorCap >= outShape[0] * outShape[1] * outShape[2] * sizeof(float));
 
     // Decode the output tensor
-    TextRecognitionOutput output;
     std::vector<std::pair<uint32_t, float>> currentEntries;
+    uint32_t prevArgmax{};
     for (uint32_t i = 0; i < outShape[1]; i++) { // For each sequence element
         // Find argmax
         std::span<float> outData(reinterpret_cast<float*>(tensorDataRaw) + i * outShape[2], outShape[2]);
-        uint32_t argmax = std::max_element(begin(outData), end(outData)) - begin(outData);
+        auto argmax = uint32_t(std::max_element(begin(outData), end(outData)) - begin(outData));
         float confidence = outData[argmax];
         if (argmax == 0) {
             // Skip the blank token
+            prevArgmax = argmax;
             continue;
         }
 
         // Filter duplicate characters
-        if (currentEntries.empty() || currentEntries.back().first != argmax) {
+        bool filterDuplicate = true;
+        if (filterDuplicate) {
+            if (prevArgmax != argmax) {
+                currentEntries.emplace_back(argmax, confidence);
+            }
+        } else {
             currentEntries.emplace_back(argmax, confidence);
         }
+
+        prevArgmax = argmax;
     }
     std::wstring currentText;
     float currentConfidence = 0.0f;
@@ -362,12 +371,11 @@ TextRecognitionOutput TextRecognizer::recognize(SoftwareBitmap const& image) {
         currentText += m_ctcDict[index];
         currentConfidence += confidence;
     }
-    output.entries.push_back(TextRecognitionFragment{
+
+    return {
         .text = hstring(currentText),
         .confidence = currentConfidence / currentEntries.size(),
-        });
-
-    return output;
+    };
 }
 
 void TextRecognizer::InitSession() {

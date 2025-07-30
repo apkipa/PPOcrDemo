@@ -39,8 +39,8 @@ namespace PPOcr {
             m_session = nullptr; // Reset session to reinitialize with new device
         }
 
-        TextRecognitionOutput recognize(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
-        std::vector<TextRecognitionOutput> recognize_many(winrt::array_view<winrt::Windows::Graphics::Imaging::SoftwareBitmap const> images);
+        TextRecognitionFragment recognize(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+        std::vector<TextRecognitionFragment> recognize_many(winrt::array_view<winrt::Windows::Graphics::Imaging::SoftwareBitmap const> images);
 
     private:
         void InitSession();
@@ -65,7 +65,7 @@ namespace PPOcr {
         void set_text_detector(TextDetector const& detector);
         void set_text_recognizer(TextRecognizer const& recognizer);
 
-        TextRecognitionOutput recognize(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+        TextRecognitionOutput do_ocr(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
 
     private:
         TextDetector m_detector;

@@ -64,14 +64,17 @@ namespace winrt::PPOcrDemo::implementation {
     auto MainPage::MakeLoadSession() {
         VisualStateManager::GoToState(*this, L"IndicationLoading", true);
         return tenkai::cpp_utils::ScopeExit([this, dq = DispatcherQueue::GetForCurrentThread()] {
-            if (dq.HasThreadAccess()) {
-                VisualStateManager::GoToState(*this, L"IndicationIdle", true);
+            try {
+                if (dq.HasThreadAccess()) {
+                    VisualStateManager::GoToState(*this, L"IndicationIdle", true);
+                }
+                else {
+                    dq.TryEnqueue([self = get_strong()] {
+                        VisualStateManager::GoToState(*self, L"IndicationIdle", true);
+                    });
+                }
             }
-            else {
-                dq.TryEnqueue([self = get_strong()] {
-                    VisualStateManager::GoToState(*self, L"IndicationIdle", true);
-                });
-            }
+            catch (...) {}
         });
     }
 
@@ -160,7 +163,7 @@ namespace winrt::PPOcrDemo::implementation {
         return result;
     }
 
-    void MainPage::ReportExceptionAsDialog(hstring const& header) {
+    void MainPage::ReportExceptionAsDialog(hstring const& header) try {
         hstring errMsg;
         try { throw; }
         catch (hresult_error const& ex) {
@@ -189,6 +192,7 @@ namespace winrt::PPOcrDemo::implementation {
             disp.RunAsync(CoreDispatcherPriority::Low, std::move(run));
         }
     }
+    catch (...) {}
 
     IAsyncAction MainPage::LoadInputImageFromDataPackageAsync(DataPackageView const& dataPackage) {
         auto self = get_strong();
@@ -232,6 +236,9 @@ namespace winrt::PPOcrDemo::implementation {
 
         auto loadSess = MakeLoadSession();
 
+        bool isTextDetectionEnabled = unbox_value_or<bool>(EnableTextDetectionCheckBox().IsChecked(), false);
+        bool isTextRecognitionEnabled = unbox_value_or<bool>(EnableTextRecognitionCheckBox().IsChecked(), false);
+
         try {
             co_await resume_background();
             auto t0 = std::chrono::high_resolution_clock::now();
@@ -239,12 +246,10 @@ namespace winrt::PPOcrDemo::implementation {
             auto t1 = std::chrono::high_resolution_clock::now();
             co_await Dispatcher();
 
-            OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.2f} ms", std::chrono::duration<double, std::milli>(t1 - t0).count()));
+            OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", std::chrono::duration<double, std::milli>(t1 - t0).count()));
 
             std::wstring outputText;
-            for (auto&& entry : output.entries) {
-                outputText += std::format(L"{:.2f}:\n{}\n", entry.confidence, entry.text);
-            }
+            outputText += std::format(L"{:.3f}:\n{}\n", output.confidence, output.text);
             if (!outputText.empty()) {
                 outputText.pop_back(); // Remove the last newline character
             }
