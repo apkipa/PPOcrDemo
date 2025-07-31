@@ -4,6 +4,7 @@
 using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::Foundation::Collections;
+using namespace Windows::Graphics;
 using namespace Windows::Graphics::Imaging;
 
 using namespace mam;
@@ -268,100 +269,362 @@ com_ptr<IWICBitmap> ResizeWICBitmapByHeight(com_ptr<IWICBitmap> const& bmp, uint
     return ResizeWICBitmap(bmp, newWidth, newHeight);
 }
 
-/// <summary>
-/// Finds contours in the provided image.
-/// </summary>
-/// <typeparam name="G">fn(x: u32, y: u32) -> bool</typeparam>
-/// <typeparam name="F">fn(std::vector<std::pair<u32, u32>>)</typeparam>
-/// <param name="width"></param>
-/// <param name="height"></param>
-/// <param name="bmpGetter">The pixel getter of the image.</param>
-/// <param name="f"></param>
-template <typename G, typename F>
-void FindContours(uint32_t width, uint32_t height, G&& bmpGetter, F&& f) {
-    // 8 directions: (dx, dy)
-    constexpr int dx[8] = { 1, 1, 0, -1, -1, -1, 0, 1 };
-    constexpr int dy[8] = { 0, -1, -1, -1, 0, 1, 1, 1 };
-    // Label image: 0=background, 1=visited/contour
-    std::vector<uint8_t> label(width * height, 0);
+namespace {
+    using PPOcr::Quad;
+    using PPOcr::BinaryMask;
 
-    auto get = [&](int x, int y) -> bool {
-        return x >= 0 && x < (int)width && y >= 0 && y < (int)height && bmpGetter(x, y);
-    };
-    auto getLabel = [&](int x, int y) -> uint8_t& {
-        return label[y * width + x];
+    struct BoundingBox {
+        std::pair<uint32_t, uint32_t> topLeft;     // Left-top corner
+        std::pair<uint32_t, uint32_t> topRight;    // Right-top corner
+        std::pair<uint32_t, uint32_t> bottomRight; // Right-bottom corner
+        std::pair<uint32_t, uint32_t> bottomLeft;  // Left-bottom corner
     };
 
-    for (uint32_t y = 0; y < height; y++) {
-        for (uint32_t x = 0; x < width; x++) {
-            if (!get(x, y) || getLabel(x, y)) { continue; }
-            // Start of a new contour
-            std::vector<std::pair<uint32_t, uint32_t>> contour;
-            int sx = x, sy = y, px = x, py = y, dir = 7; // Start direction: left
-            bool closed = false;
-            do {
-                contour.emplace_back(px, py);
-                getLabel(px, py) = 1;
-                int ndir = (dir + 1) % 8;
-                bool found = false;
-                for (int k = 0; k < 8; k++) {
-                    int nx = px + dx[ndir], ny = py + dy[ndir];
-                    if (get(nx, ny) && !getLabel(nx, ny)) {
-                        px = nx; py = ny; dir = (ndir + 6) % 8; // Next search direction
-                        found = true;
-                        break;
+    struct RotatedRect {
+        Point center;
+        Size size; // Width and height
+        float radius;
+
+        float area() const {
+            return size.Width * size.Height;
+        }
+        float length() const {
+            return 2 * (size.Width + size.Height);
+        }
+        RotatedRect extend_size(float extendWidth, float extendHeight) const {
+            return RotatedRect{
+                center,
+                Size{ size.Width + extendWidth, size.Height + extendHeight },
+                radius
+            };
+        }
+        RotatedRect extend_frame(float distance) const {
+            return extend_size(distance * 2, distance * 2);
+        }
+    };
+
+    // 形态学操作实现
+    namespace Morphology {
+        // 膨胀
+        BinaryMask dilate(BinaryMask const& input, int kernelSize) {
+            BinaryMask output(input.getWidth(), input.getHeight());
+            int halfKernel = kernelSize / 2;
+
+            for (int y = 0; y < (int)input.getHeight(); y++) {
+                for (int x = 0; x < (int)input.getWidth(); x++) {
+                    if (input.get(x, y)) {
+                        for (int ky = -halfKernel; ky <= halfKernel; ky++) {
+                            for (int kx = -halfKernel; kx <= halfKernel; kx++) {
+                                if (input.isValid(x + kx, y + ky)) {
+                                    output.set(x + kx, y + ky, true);
+                                }
+                            }
+                        }
                     }
-                    ndir = (ndir + 1) % 8;
                 }
-                if (!found) {
-                    // Isolated point or closed
-                    closed = (px == sx && py == sy);
-                    break;
+            }
+            return output;
+        }
+
+        // 腐蚀
+        BinaryMask erode(BinaryMask const& input, int kernelSize) {
+            BinaryMask output(input.getWidth(), input.getHeight());
+            int halfKernel = kernelSize / 2;
+
+            for (int y = 0; y < (int)input.getHeight(); ++y) {
+                for (int x = 0; x < (int)input.getWidth(); ++x) {
+                    bool allWhite = true;
+                    for (int ky = -halfKernel; ky <= halfKernel; ++ky) {
+                        for (int kx = -halfKernel; kx <= halfKernel; ++kx) {
+                            if (input.isValid(x + kx, y + ky)) {
+                                if (input.get(x + kx, y + ky) == 0) {
+                                    allWhite = false;
+                                    break;
+                                }
+                            }
+                            else { // 边界外的像素视为黑色
+                                allWhite = false;
+                                break;
+                            }
+                        }
+                        if (!allWhite) { break; }
+                    }
+                    if (allWhite) {
+                        output.set(x, y, 255);
+                    }
                 }
-            } while (!(px == sx && py == sy));
-            if (!contour.empty()) {
-                f(std::move(contour));
+            }
+            return output;
+        }
+
+        // 闭运算：填充小的空洞和断裂
+        BinaryMask close(const BinaryMask& input, int kernelSize) {
+            BinaryMask dilated = dilate(input, kernelSize);
+            return erode(dilated, kernelSize);
+        }
+    }
+
+    // 并查集 (用于CCL)
+    class DSU {
+        std::vector<int> parent;
+    public:
+        DSU(int n) {
+            parent.resize(n);
+            for (int i = 0; i < n; ++i) parent[i] = i;
+        }
+        int find(int i) {
+            if (parent[i] == i) { return i; }
+            return parent[i] = find(parent[i]);
+        }
+        void unite(int i, int j) {
+            int root_i = find(i);
+            int root_j = find(j);
+            if (root_i != root_j) {
+                parent[root_i] = root_j;
             }
         }
+    };
+
+    // CCL 实现 (BFS 版本)
+    std::vector<std::vector<PointInt32>> findConnectedComponentsBFS(BinaryMask const& mask, uint32_t minArea) {
+        int width = mask.getWidth();
+        int height = mask.getHeight();
+        std::vector<uint8_t> visited(width * height, 0);
+        std::vector<std::vector<PointInt32>> components;
+
+        const int dx[4] = { 1, -1, 0, 0 };
+        const int dy[4] = { 0, 0, 1, -1 };
+
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (mask.get(x, y) && !visited[y * width + x]) {
+                    std::vector<PointInt32> component;
+                    std::queue<PointInt32> q;
+                    q.push({ x, y });
+                    visited[y * width + x] = 1;
+
+                    while (!q.empty()) {
+                        auto p = q.front();
+                        q.pop();
+                        component.push_back(p);
+                        for (size_t d = 0; d < std::size(dx); d++) {
+                            int nx = p.X + dx[d];
+                            int ny = p.Y + dy[d];
+                            if (mask.isValid(nx, ny) && mask.get(nx, ny) && !visited[ny * width + nx]) {
+                                visited[ny * width + nx] = 1;
+                                q.push({ nx, ny });
+                            }
+                        }
+                    }
+                    if (component.size() >= minArea) {
+                        components.push_back(std::move(component));
+                    }
+                }
+            }
+        }
+        return components;
+    }
+
+#if 0
+    // CCL 实现
+    std::vector<std::vector<PointInt32>> findConnectedComponentsDSU(BinaryMask const& mask, int minArea) {
+        int width = mask.getWidth();
+        int height = mask.getHeight();
+        BinaryMask labeledMask(width, height);
+        DSU dsu(width * height);
+        int nextLabel = 1;
+
+        // 第一遍：分配初始标签并记录等价关系
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                if (mask.get(x, y) == 255) {
+                    std::vector<int> neighbors;
+                    if (y > 0 && labeledMask.get(x, y - 1) > 0) { neighbors.push_back(labeledMask.get(x, y - 1)); }
+                    if (x > 0 && labeledMask.get(x - 1, y) > 0) { neighbors.push_back(labeledMask.get(x - 1, y)); }
+
+                    if (neighbors.empty()) {
+                        labeledMask.set(x, y, nextLabel);
+                        nextLabel++;
+                    }
+                    else {
+                        int minNeighbor = neighbors[0];
+                        for (size_t i = 1; i < neighbors.size(); i++) {
+                            if (neighbors[i] < minNeighbor) { minNeighbor = neighbors[i]; }
+                        }
+                        labeledMask.set(x, y, minNeighbor);
+                        for (int neighbor : neighbors) {
+                            dsu.unite(minNeighbor, neighbor);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 第二遍：解析等价关系并收集点
+        std::map<int, std::vector<PointInt32>> components;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int label = labeledMask.get(x, y);
+                if (label > 0) {
+                    int rootLabel = dsu.find(label);
+                    components[rootLabel].push_back({ x, y });
+                }
+            }
+        }
+
+        // 过滤小面积组件
+        std::vector<std::vector<PointInt32>> filteredComponents;
+        for (auto&& [label, points] : components) {
+            if (points.size() >= minArea) {
+                filteredComponents.push_back(std::move(points));
+            }
+        }
+
+        return filteredComponents;
+    }
+#endif
+
+    namespace Geometry {
+        // 向量叉积，用于判断转向
+        long long cross_product(PointInt32 O, PointInt32 A, PointInt32 B) {
+            return (long long)(A.X - O.X) * (B.Y - O.Y) - (long long)(A.Y - O.Y) * (B.X - O.X);
+        }
+
+        // 计算凸包 (Monotone Chain Algorithm)
+        std::vector<PointInt32> convexHull(std::vector<PointInt32>& points) {
+            size_t n = points.size();
+            if (n <= 3) { return points; }
+
+            std::sort(points.begin(), points.end(), [](PointInt32 A, PointInt32 B) {
+                return A.X < B.X || (A.X == B.X && A.Y < B.Y);
+            });
+
+            std::vector<PointInt32> hull;
+            // 构建下凸包
+            for (size_t i = 0; i < n; i++) {
+                while (hull.size() >= 2 && cross_product(hull[hull.size() - 2], hull.back(), points[i]) <= 0) {
+                    hull.pop_back();
+                }
+                hull.push_back(points[i]);
+            }
+
+            // 构建上凸包
+            for (size_t i = n - 2, t = hull.size() + 1; i != -1; i--) {
+                while (hull.size() >= t && cross_product(hull[hull.size() - 2], hull.back(), points[i]) <= 0) {
+                    hull.pop_back();
+                }
+                hull.push_back(points[i]);
+            }
+
+            hull.pop_back(); // 最后一个点是重复的
+            return hull;
+        }
+
+        // 计算两点间距离的平方
+        double distSq(Point p1, Point p2) {
+            return (p1.X - p2.X) * (p1.X - p2.X) + (p1.Y - p2.Y) * (p1.Y - p2.Y);
+        }
+
+        // 旋转卡尺法寻找最小外接矩形，返回最小外接矩形的旋转矩形参数
+        RotatedRect getMinimumBoundingRectangle(std::vector<PointInt32> const& hull) {
+            double minArea = std::numeric_limits<double>::max();
+            RotatedRect bestRect{};
+            size_t n = hull.size();
+            if (n < 3) { return {}; } // 无法形成矩形
+
+            for (size_t i = 0; i < n; i++) {
+                PointInt32 p1 = hull[i];
+                PointInt32 p2 = hull[(i + 1) % n];
+
+                // 边的方向向量
+                double edge_dx = p2.X - p1.X;
+                double edge_dy = p2.Y - p1.Y;
+                double edge_len = std::sqrt(edge_dx * edge_dx + edge_dy * edge_dy);
+                if (edge_len == 0) { continue; }
+
+                // 单位方向向量
+                double ux = edge_dx / edge_len;
+                double uy = edge_dy / edge_len;
+                // 单位法向量
+                double vx = -uy;
+                double vy = ux;
+
+                double min_proj_edge = 0, max_proj_edge = 0;
+                double min_proj_norm = 0, max_proj_norm = 0;
+
+                for (auto const& p : hull) {
+                    double proj_edge = (p.X - p1.X) * ux + (p.Y - p1.Y) * uy;
+                    double proj_norm = (p.X - p1.X) * vx + (p.Y - p1.Y) * vy;
+
+                    if (proj_edge < min_proj_edge) { min_proj_edge = proj_edge; }
+                    if (proj_edge > max_proj_edge) { max_proj_edge = proj_edge; }
+                    if (proj_norm < min_proj_norm) { min_proj_norm = proj_norm; }
+                    if (proj_norm > max_proj_norm) { max_proj_norm = proj_norm; }
+                }
+
+                double width = max_proj_edge - min_proj_edge;
+                double height = max_proj_norm - min_proj_norm;
+                double area = width * height;
+
+                if (area < minArea) {
+                    minArea = area;
+                    // 计算中心点
+                    double cx = p1.X + (min_proj_edge + width / 2) * ux + (min_proj_norm + height / 2) * vx;
+                    double cy = p1.Y + (min_proj_edge + width / 2) * uy + (min_proj_norm + height / 2) * vy;
+                    // 旋转角度（以x轴为基准，逆时针，弧度）
+                    float angle = static_cast<float>(std::atan2(uy, ux));
+                    bestRect.center = { static_cast<float>(cx), static_cast<float>(cy) };
+                    bestRect.size = { static_cast<float>(width), static_cast<float>(height) };
+                    bestRect.radius = angle;
+                }
+            }
+            return bestRect;
+        }
+    }
+
+    Quad ToQuad(RotatedRect const& rect) {
+        // Calculate half dimensions
+        float halfWidth = rect.size.Width * 0.5f;
+        float halfHeight = rect.size.Height * 0.5f;
+        // Precompute sin/cos
+        float cosTheta = std::cos(rect.radius);
+        float sinTheta = std::sin(rect.radius);
+        // Define unrotated corners relative to center
+        constexpr int dx[4] = { -1,  1,  1, -1 };
+        constexpr int dy[4] = { -1, -1,  1,  1 };
+        Point corners[4];
+        for (int i = 0; i < 4; ++i) {
+            float x = dx[i] * halfWidth;
+            float y = dy[i] * halfHeight;
+            // Rotate and translate
+            corners[i].X = rect.center.X + x * cosTheta - y * sinTheta;
+            corners[i].Y = rect.center.Y + x * sinTheta + y * cosTheta;
+        }
+        return Quad{ { corners[0], corners[1], corners[2], corners[3] } };
     }
 }
 
-struct BoundingBox {
-    std::pair<uint32_t, uint32_t> topLeft;     // Left-top corner
-    std::pair<uint32_t, uint32_t> topRight;    // Right-top corner
-    std::pair<uint32_t, uint32_t> bottomRight; // Right-bottom corner
-    std::pair<uint32_t, uint32_t> bottomLeft;  // Left-bottom corner
-};
-
 /// <summary>
-/// 查找图像中的轮廓区域，返回每个区域的外接矩形（四个角点）。
-/// <typeparam name="G">fn(x: u32, y: u32) -> bool</typeparam>
-/// <typeparam name="F">fn(BoundingBox)</typeparam>
-/// <param name="width"></param>
-/// <param name="height"></param>
-/// <param name="bmpGetter">像素获取器</param>
+/// 查找图像中的轮廓区域，返回每个区域的外接包围盒。
+/// <typeparam name="F">fn(RotatedRect)</typeparam>
+/// <param name="mask"></param>
 /// <param name="f">回调，每个区域调用一次</param>
-template <typename G, typename F>
-void FindBoundingBoxes(uint32_t width, uint32_t height, G&& bmpGetter, F&& f) {
-    FindContours(width, height, std::forward<G>(bmpGetter), [&](std::vector<std::pair<uint32_t, uint32_t>>&& contour) {
-        if (contour.empty()) return;
-        uint32_t minX = contour[0].first, maxX = contour[0].first;
-        uint32_t minY = contour[0].second, maxY = contour[0].second;
-        for (const auto& [x, y] : contour) {
-            if (x < minX) { minX = x; }
-            if (x > maxX) { maxX = x; }
-            if (y < minY) { minY = y; }
-            if (y > maxY) { maxY = y; }
-        }
-        // 以左上、右上、右下、左下顺序返回
-        BoundingBox box{
-            { minX, minY }, // 左上角
-            { maxX, minY }, // 右上角
-            { maxX, maxY }, // 右下角
-            { minX, maxY }  // 左下角
-        };
-        f(std::move(box));
-    });
+template <typename F>
+void FindBoundingBoxes(BinaryMask const& mask, F&& f) {
+    // Step 1: Find connected components (regions) in the mask
+    constexpr uint32_t kMinArea = 10; // Minimum area to filter noise, can be parameterized
+    auto components = findConnectedComponentsBFS(mask, kMinArea);
+
+    // Step 2: For each component, compute convex hull and minimum bounding rectangle
+    for (auto& comp : components) {
+        if (comp.empty()) { continue; }
+        // Compute convex hull
+        auto hull = Geometry::convexHull(comp);
+        if (hull.size() < 3) { continue; } // Ignore degenerate
+        // Compute minimum bounding rectangle
+        auto minRect = Geometry::getMinimumBoundingRectangle(hull);
+        f(std::move(minRect));
+    }
 }
 
 #define BEGIN_NAMESPACE(x) namespace x {
@@ -399,25 +662,19 @@ TextDetector::TextDetector(hstring const& model_path) : m_model(nullptr), m_devi
     m_model = std::move(model);
 }
 
-std::vector<Rect> TextDetector::detect(SoftwareBitmap const& image) {
+std::vector<Quad> TextDetector::detect(SoftwareBitmap const& image) {
     InitSession();
 
-    auto [imgMask, maskWidth, maskHeight] = DetectMaskImage(image);
+    auto imgMask = DetectMaskImage(image);
 
-    std::vector<Rect> results;
-    FindBoundingBoxes(maskWidth, maskHeight, [&](uint32_t x, uint32_t y) -> bool {
-        // Check if the pixel is above the threshold
-        return imgMask[y * maskWidth + x] != 0;
-    }, [&](BoundingBox&& box) {
-        // Convert the bounding box to Rect format
-        // The coordinates are in (x, y) format
-        Rect rect{
-            static_cast<float>(box.topLeft.first),
-            static_cast<float>(box.topLeft.second),
-            static_cast<float>(box.bottomRight.first - box.topLeft.first),
-            static_cast<float>(box.bottomRight.second - box.topLeft.second)
-        };
-        results.push_back(rect);
+    std::vector<Quad> results;
+    FindBoundingBoxes(imgMask, [&](RotatedRect&& box) {
+        // Use the area and length to calculate the distance for extending the bounding box
+        const float unclipRatio = 2.0f;
+        float distance = box.area() * unclipRatio / box.length();
+        auto quad = ToQuad(box.extend_frame(distance));
+        //auto quad = ToQuad(box);
+        results.push_back(quad);
     });
 
     return results;
@@ -428,7 +685,9 @@ SoftwareBitmap TextDetector::detect_mask(SoftwareBitmap const& image) {
 
     auto imgWidth = (uint32_t)image.PixelWidth();
     auto imgHeight = (uint32_t)image.PixelHeight();
-    auto [imgMask, maskWidth, maskHeight] = DetectMaskImage(image);
+    auto imgMask = DetectMaskImage(image);
+    auto maskWidth = imgMask.getWidth();
+    auto maskHeight = imgMask.getHeight();
 
     SoftwareBitmap outImage(BitmapPixelFormat::Gray8, imgWidth, imgHeight);
     auto buffer = outImage.LockBuffer(BitmapBufferAccessMode::Write);
@@ -439,7 +698,7 @@ SoftwareBitmap TextDetector::detect_mask(SoftwareBitmap const& image) {
     for (uint32_t y = 0; y < std::min(imgHeight, maskHeight); y++) {
         for (uint32_t x = 0; x < std::min(imgWidth, maskWidth); x++) {
             // Set the pixel value based on the mask
-            uint8_t value = imgMask[y * maskWidth + x];
+            uint8_t value = imgMask.get(x, y);
             ptr[y * stride + x] = value;
         }
     }
@@ -447,7 +706,7 @@ SoftwareBitmap TextDetector::detect_mask(SoftwareBitmap const& image) {
     return outImage;
 }
 
-std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> TextDetector::DetectMaskImage(SoftwareBitmap const& image) {
+BinaryMask TextDetector::DetectMaskImage(SoftwareBitmap const& image) {
     // Get pointer to the image data
     auto bmp = SoftwareBitmapToWICBitmap(image);
     auto [bmpWidth, bmpHeight] = GetWICBitmapSize(bmp);
@@ -507,6 +766,7 @@ std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> TextDetector::DetectMaskIma
     assert(outShape[1] == 1); // Channels must be 1 (binary mask)
 
     const float threshold = 0.7f;
+
     auto outHeight = outShape[2];
     auto outWidth = outShape[3];
     std::vector<uint8_t> maskData(outHeight * outWidth, 0);
@@ -515,13 +775,14 @@ std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> TextDetector::DetectMaskIma
             // Check if the pixel is above the threshold
             if (tensorData[y * outWidth + x] > threshold) {
                 maskData[y * outWidth + x] = 255; // Set to white
-            } else {
+            }
+            else {
                 maskData[y * outWidth + x] = 0; // Set to black
             }
         }
     }
 
-    return { std::move(maskData), outWidth, outHeight }; // Return mask data and dimensions
+    return { outWidth, outHeight, std::move(maskData) }; // Return mask data and dimensions
 }
 
 void TextDetector::InitSession() {
@@ -726,11 +987,11 @@ void PPOcr::GlobalInit() {
 }
 
 std::vector<hstring> PPOcr::EnumerateD3D12Devices() {
-    if (false) {
-        return EnumerateD3D12DevicesViaDxgi();
+    if (g_DxUseCore) {
+        return EnumerateD3D12DevicesViaDxCore();
     }
     else {
-        return EnumerateD3D12DevicesViaDxCore();
+        return EnumerateD3D12DevicesViaDxgi();
     }
 }
 

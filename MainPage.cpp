@@ -10,6 +10,7 @@
 using namespace winrt;
 using namespace Windows::Foundation;
 using namespace Windows::System;
+using namespace Windows::UI;
 using namespace Windows::UI::Core;
 using namespace Windows::UI::Xaml;
 using namespace Windows::UI::Xaml::Controls;
@@ -117,9 +118,17 @@ namespace winrt::PPOcrDemo::implementation {
 
     void MainPage::ClearOcrOutput_Click(IInspectable const& sender, RoutedEventArgs const& e) {
         OcrInputMaskImage().Source(nullptr);
+        MarkDetectionQuads({});
 
         OcrOutputTextBox().Text({});
         OcrTimingTextBlock().Text({});
+    }
+
+    void MainPage::GridSplitter_DoubleTapped(IInspectable const& sender, DoubleTappedRoutedEventArgs const& e) {
+        e.Handled(true);
+
+        // Restore width
+        LayoutRoot().ColumnDefinitions().GetAt(1).Width(GridLengthHelper::FromPixels(400));
     }
 
     IAsyncAction MainPage::ReinitOcrModelsAsync(bool invalidateDevices) {
@@ -234,12 +243,12 @@ namespace winrt::PPOcrDemo::implementation {
             // If device selection changed, reload models with new device
             auto selection = InferenceDeviceComboBox().SelectedItem();
             bool needReinit = (selection != m_previousDeviceSelection) ||
-                !m_textRecognizer;
+                !m_textDetector || !m_textRecognizer;
             if (needReinit) {
                 m_previousDeviceSelection = std::move(selection);
                 co_await ReinitOcrModelsAsync(false);
 
-                OcrInputMaskImage().Source(nullptr);
+                //OcrInputMaskImage().Source(nullptr);
             }
         }
 
@@ -250,11 +259,14 @@ namespace winrt::PPOcrDemo::implementation {
 
         bool isTextDetectionEnabled = unbox_value_or<bool>(EnableTextDetectionCheckBox().IsChecked(), false);
         bool isTextRecognitionEnabled = unbox_value_or<bool>(EnableTextRecognitionCheckBox().IsChecked(), false);
+        bool optimizeModelIO = unbox_value_or<bool>(OptimizeModelIOCheckBox().IsChecked(), false);
 
         if (!isTextRecognitionEnabled && !isTextDetectionEnabled) {
             // Neither text detection nor recognition is enabled, do nothing
             co_return;
         }
+
+        // TODO: Implement optimizeModelIO
 
         auto loadSess = MakeLoadSession();
 
@@ -290,14 +302,20 @@ namespace winrt::PPOcrDemo::implementation {
                     OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
 
                     std::wstring outputText;
-                    for (auto rect : output) {
-                        outputText += std::format(L"检测到文本区域: ({}, {}, {}, {})\n",
-                            rect.X, rect.Y, rect.Width, rect.Height);
+                    for (auto quad : output) {
+                        outputText += std::format(L"[({:.2f}, {:.2f}), ({:.2f}, {:.2f}), ({:.2f}, {:.2f}), ({:.2f}, {:.2f})]\n",
+                            quad.corners[0].X, quad.corners[0].Y,
+                            quad.corners[1].X, quad.corners[1].Y,
+                            quad.corners[2].X, quad.corners[2].Y,
+                            quad.corners[3].X, quad.corners[3].Y
+                        );
                     }
                     if (!outputText.empty()) {
                         outputText.pop_back(); // Remove the last newline character
                     }
                     OcrOutputTextBox().Text(outputText);
+
+                    MarkDetectionQuads(output);
                 });
             }
             else if (!isTextDetectionEnabled && isTextRecognitionEnabled) {
@@ -320,6 +338,29 @@ namespace winrt::PPOcrDemo::implementation {
         }
         catch (...) {
             ReportExceptionAsDialog(L"无法执行 OCR");
+        }
+    }
+
+    void MainPage::MarkDetectionQuads(std::vector<PPOcr::Quad> const& quads) {
+        auto layoutRoot = OcrDetectionLayoutRoot();
+        auto layoutRootChildren = layoutRoot.Children();
+        layoutRootChildren.Clear();
+
+        if (!m_inputImage) { return; }
+
+        auto canvasWidth = m_inputImage.PixelWidth();
+        auto canvasHeight = m_inputImage.PixelHeight();
+
+        layoutRoot.Width(canvasWidth);
+        layoutRoot.Height(canvasHeight);
+
+        auto brush = SolidColorBrush();
+        brush.Color(Colors::MediumPurple());
+        for (auto& quad : quads) {
+            Shapes::Polygon polygon;
+            polygon.Fill(brush);
+            polygon.Points().ReplaceAll(quad.corners);
+            layoutRootChildren.Append(polygon);
         }
     }
 }

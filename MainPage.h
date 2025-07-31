@@ -14,6 +14,7 @@ namespace winrt::PPOcrDemo::implementation {
         void StartOcrButton_Click(Windows::Foundation::IInspectable const& sender, Windows::UI::Xaml::RoutedEventArgs const& e);
         void ShowOcrMaskButton_Click(Windows::Foundation::IInspectable const& sender, Windows::UI::Xaml::RoutedEventArgs const& e);
         void ClearOcrOutput_Click(Windows::Foundation::IInspectable const& sender, Windows::UI::Xaml::RoutedEventArgs const& e);
+        void GridSplitter_DoubleTapped(Windows::Foundation::IInspectable const& sender, Windows::UI::Xaml::Input::DoubleTappedRoutedEventArgs const& e);
 
     private:
         Windows::Foundation::IAsyncAction ReinitOcrModelsAsync(bool invalidateDevices);
@@ -21,6 +22,7 @@ namespace winrt::PPOcrDemo::implementation {
         void ReportExceptionAsDialog(hstring const& header = {});
         Windows::Foundation::IAsyncAction LoadInputImageFromDataPackageAsync(Windows::ApplicationModel::DataTransfer::DataPackageView const& dp);
         Windows::Foundation::IAsyncAction DoOcrAsync(bool showMask);
+        void MarkDetectionQuads(std::vector<PPOcr::Quad> const& quads);
 
         auto MakeLoadSession();
         template <typename F>

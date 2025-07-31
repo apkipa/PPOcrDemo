@@ -47,10 +47,13 @@
 #include <thread>
 #include <vector>
 #include <mutex>
+#include <queue>
+#include <map>
 
 #include <winrt/Tenkai.h>
-#include <winrt/Tenkai.UI.Xaml.h>
 #include <winrt/Tenkai.Storage.h>
+#include <winrt/Tenkai.UI.Xaml.h>
+#include <winrt/Tenkai.UI.Xaml.Controls.h>
 
 //#define USE_WINML_NUGET
 

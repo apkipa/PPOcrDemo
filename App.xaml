@@ -2,6 +2,11 @@
     x:Class="PPOcrDemo.App"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:tuxc="using:Tenkai.UI.Xaml.Controls"
     xmlns:local="using:PPOcrDemo">
+
+    <Application.Resources>
+        <tuxc:XamlControlsResources />
+    </Application.Resources>
 
 </Application>

@@ -5,9 +5,10 @@
     xmlns:local="using:PPOcrDemo"
     xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
     xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    xmlns:tuxc="using:Tenkai.UI.Xaml.Controls"
     mc:Ignorable="d">
 
-    <Grid>
+    <Grid x:Name="LayoutRoot">
         <VisualStateManager.VisualStateGroups>
             <VisualStateGroup x:Name="LoadingProgressIndications">
                 <VisualState x:Name="IndicationIdle" />
@@ -34,13 +35,28 @@
             <TextBlock Grid.Column="0" Text="将图片拖放到此处" HorizontalAlignment="Center" VerticalAlignment="Center" />
             <Image x:Name="OcrInputImage" />
             <Image x:Name="OcrInputMaskImage" />
+            <Viewbox x:Name="OcrDetectionViewbox">
+                <Grid x:Name="OcrDetectionLayoutRoot" />
+            </Viewbox>
         </Grid>
         <ScrollViewer Grid.Column="1">
             <StackPanel Orientation="Vertical" Spacing="4" Padding="8">
                 <TextBlock Text="PPOcrDemo" FontSize="24" FontWeight="Bold" Margin="0,0,0,4" />
                 <ComboBox x:Name="InferenceDeviceComboBox" Header="选择推理设备" />
-                <CheckBox x:Name="EnableTextDetectionCheckBox" Content="启用文本检测" IsChecked="True" />
-                <CheckBox x:Name="EnableTextRecognitionCheckBox" Content="启用文本识别" IsChecked="True" />
+                <StackPanel Orientation="Vertical">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                        </Grid.ColumnDefinitions>
+
+                        <CheckBox x:Name="EnableTextDetectionCheckBox" Content="启用文本检测" IsChecked="True" />
+                        <Slider Grid.Column="1" Value="{x:Bind OcrDetectionLayoutRoot.Opacity,Mode=TwoWay}" Minimum="0" Maximum="1"
+                            StepFrequency="0.0009765625" Margin="4,0" />
+                    </Grid>
+                    <CheckBox x:Name="EnableTextRecognitionCheckBox" Content="启用文本识别" IsChecked="True" />
+                    <CheckBox x:Name="OptimizeModelIOCheckBox" Content="优化模型 I/O (限制资源占用上限，可能影响性能)" IsChecked="True" />
+                </StackPanel>
                 <Button x:Name="StartOcrButton" Content="开始 OCR" Click="StartOcrButton_Click" />
                 <Grid>
                     <Grid.ColumnDefinitions>
@@ -50,13 +66,20 @@
                     
                     <Button x:Name="ShowOcrMaskButton" Content="显示 OCR 掩码图" Click="ShowOcrMaskButton_Click" />
                     <Slider Grid.Column="1" Value="{x:Bind OcrInputMaskImage.Opacity,Mode=TwoWay}" Minimum="0" Maximum="1"
-                            StepFrequency="0.00390625" Margin="4,0" />
+                            StepFrequency="0.0009765625" Margin="4,0" />
                 </Grid>
                 <Button x:Name="ClearOcrOutput" Content="清空识别结果" Click="ClearOcrOutput_Click" />
                 <TextBlock x:Name="OcrTimingTextBlock" />
                 <TextBox x:Name="OcrOutputTextBox" Header="OCR 识别文本" AcceptsReturn="True" />
             </StackPanel>
         </ScrollViewer>
+
+        <tuxc:GridSplitter Grid.Column="1" Width="8" Padding="0" HorizontalAlignment="Left"
+                           IsDoubleTapEnabled="True" DoubleTapped="GridSplitter_DoubleTapped">
+            <tuxc:GridSplitter.RenderTransform>
+                <TranslateTransform X="-4" />
+            </tuxc:GridSplitter.RenderTransform>
+        </tuxc:GridSplitter>
 
         <Grid x:Name="LoadingProgressIndicationGrid" Grid.ColumnSpan="2" Background="#80000000" Visibility="Collapsed">
             <StackPanel Orientation="Vertical" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8"

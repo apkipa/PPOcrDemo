@@ -4,5 +4,6 @@ namespace PPOcrDemo {
         MainPage();
 
         Windows.UI.Xaml.Controls.Image OcrInputMaskImage{ get; };
+        Windows.UI.Xaml.Controls.Grid OcrDetectionLayoutRoot{ get; };
     };
 }

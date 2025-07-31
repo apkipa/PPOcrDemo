@@ -9,13 +9,45 @@ namespace mam = winrt::Windows::AI::MachineLearning;
 #endif
 
 namespace PPOcr {
+    struct Quad {
+       winrt::Windows::Foundation::Point corners[4];
+    };
+
+    // 二值掩码的简单封装
+    struct BinaryMask {
+        BinaryMask(uint32_t w, uint32_t h, std::vector<uint8_t> data = {}) : width(w), height(h), data(std::move(data)) {}
+
+        // 检查坐标是否在边界内
+        bool isValid(int32_t x, int32_t y) const {
+            if (x < 0 || y < 0) { return false; }
+            return (uint32_t)x < width && (uint32_t)y < height;
+        }
+
+        uint32_t getWidth() const { return width; }
+        uint32_t getHeight() const { return height; }
+
+        uint8_t get(int32_t x, int32_t y) const {
+            if (!isValid(x, y)) { return 0; }
+            return data[y * width + x];
+        }
+
+        void set(int32_t x, int32_t y, uint8_t v) {
+            if (!isValid(x, y)) { return; }
+            data[y * width + x] = v;
+        }
+
+    private:
+        uint32_t width, height;
+        std::vector<uint8_t> data;
+    };
+
     struct TextRecognitionFragment {
         winrt::hstring text;
         float confidence;
     };
 
     struct TextRecognitionFragmentWithBox : TextRecognitionFragment {
-        winrt::Windows::Foundation::Rect bounding_box;
+        Quad bounding_box;
     };
 
     struct TextRecognitionOutput {
@@ -33,12 +65,12 @@ namespace PPOcr {
             m_session = nullptr; // Reset session to reinitialize with new device
         }
 
-        std::vector<winrt::Windows::Foundation::Rect> detect(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+        std::vector<Quad> detect(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
         winrt::Windows::Graphics::Imaging::SoftwareBitmap detect_mask(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
 
     private:
         void InitSession();
-        std::tuple<std::vector<uint8_t>, uint32_t, uint32_t> DetectMaskImage(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
+        BinaryMask DetectMaskImage(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
 
         mam::LearningModel m_model{ nullptr };
         mam::LearningModelDevice m_device{ nullptr };
