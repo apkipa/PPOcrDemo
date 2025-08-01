@@ -36,7 +36,7 @@
             <Image x:Name="OcrInputImage" />
             <Image x:Name="OcrInputMaskImage" />
             <Viewbox x:Name="OcrDetectionViewbox">
-                <Grid x:Name="OcrDetectionLayoutRoot" />
+                <Grid x:Name="OcrDetectionLayoutRoot" RightTapped="OcrDetectionLayoutRoot_RightTapped" />
             </Viewbox>
         </Grid>
         <ScrollViewer Grid.Column="1">

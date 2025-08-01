@@ -1,4 +1,4 @@
-#include "pch.h"
+ï»¿#include "pch.h"
 #include "PPOcr.hpp"
 
 using namespace winrt;
@@ -283,7 +283,7 @@ namespace {
     struct RotatedRect {
         Point center;
         Size size; // Width and height
-        float radius;
+        float radian;
 
         float area() const {
             return size.Width * size.Height;
@@ -295,7 +295,7 @@ namespace {
             return RotatedRect{
                 center,
                 Size{ size.Width + extendWidth, size.Height + extendHeight },
-                radius
+                radian
             };
         }
         RotatedRect extend_frame(float distance) const {
@@ -303,9 +303,9 @@ namespace {
         }
     };
 
-    // ĞÎÌ¬Ñ§²Ù×÷ÊµÏÖ
+    // å½¢æ€å­¦æ“ä½œå®ç°
     namespace Morphology {
-        // ÅòÕÍ
+        // è†¨èƒ€
         BinaryMask dilate(BinaryMask const& input, int kernelSize) {
             BinaryMask output(input.getWidth(), input.getHeight());
             int halfKernel = kernelSize / 2;
@@ -326,7 +326,7 @@ namespace {
             return output;
         }
 
-        // ¸¯Ê´
+        // è…èš€
         BinaryMask erode(BinaryMask const& input, int kernelSize) {
             BinaryMask output(input.getWidth(), input.getHeight());
             int halfKernel = kernelSize / 2;
@@ -342,7 +342,7 @@ namespace {
                                     break;
                                 }
                             }
-                            else { // ±ß½çÍâµÄÏñËØÊÓÎªºÚÉ«
+                            else { // è¾¹ç•Œå¤–çš„åƒç´ è§†ä¸ºé»‘è‰²
                                 allWhite = false;
                                 break;
                             }
@@ -357,14 +357,14 @@ namespace {
             return output;
         }
 
-        // ±ÕÔËËã£ºÌî³äĞ¡µÄ¿Õ¶´ºÍ¶ÏÁÑ
+        // é—­è¿ç®—ï¼šå¡«å……å°çš„ç©ºæ´å’Œæ–­è£‚
         BinaryMask close(const BinaryMask& input, int kernelSize) {
             BinaryMask dilated = dilate(input, kernelSize);
             return erode(dilated, kernelSize);
         }
     }
 
-    // ²¢²é¼¯ (ÓÃÓÚCCL)
+    // å¹¶æŸ¥é›† (ç”¨äºCCL)
     class DSU {
         std::vector<int> parent;
     public:
@@ -385,7 +385,7 @@ namespace {
         }
     };
 
-    // CCL ÊµÏÖ (BFS °æ±¾)
+    // CCL å®ç° (BFS ç‰ˆæœ¬)
     std::vector<std::vector<PointInt32>> findConnectedComponentsBFS(BinaryMask const& mask, uint32_t minArea) {
         int width = mask.getWidth();
         int height = mask.getHeight();
@@ -426,7 +426,7 @@ namespace {
     }
 
 #if 0
-    // CCL ÊµÏÖ
+    // CCL å®ç°
     std::vector<std::vector<PointInt32>> findConnectedComponentsDSU(BinaryMask const& mask, int minArea) {
         int width = mask.getWidth();
         int height = mask.getHeight();
@@ -434,7 +434,7 @@ namespace {
         DSU dsu(width * height);
         int nextLabel = 1;
 
-        // µÚÒ»±é£º·ÖÅä³õÊ¼±êÇ©²¢¼ÇÂ¼µÈ¼Û¹ØÏµ
+        // ç¬¬ä¸€éï¼šåˆ†é…åˆå§‹æ ‡ç­¾å¹¶è®°å½•ç­‰ä»·å…³ç³»
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
                 if (mask.get(x, y) == 255) {
@@ -460,7 +460,7 @@ namespace {
             }
         }
 
-        // µÚ¶ş±é£º½âÎöµÈ¼Û¹ØÏµ²¢ÊÕ¼¯µã
+        // ç¬¬äºŒéï¼šè§£æç­‰ä»·å…³ç³»å¹¶æ”¶é›†ç‚¹
         std::map<int, std::vector<PointInt32>> components;
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
@@ -472,7 +472,7 @@ namespace {
             }
         }
 
-        // ¹ıÂËĞ¡Ãæ»ı×é¼ş
+        // è¿‡æ»¤å°é¢ç§¯ç»„ä»¶
         std::vector<std::vector<PointInt32>> filteredComponents;
         for (auto&& [label, points] : components) {
             if (points.size() >= minArea) {
@@ -485,12 +485,12 @@ namespace {
 #endif
 
     namespace Geometry {
-        // ÏòÁ¿²æ»ı£¬ÓÃÓÚÅĞ¶Ï×ªÏò
+        // å‘é‡å‰ç§¯ï¼Œç”¨äºåˆ¤æ–­è½¬å‘
         long long cross_product(PointInt32 O, PointInt32 A, PointInt32 B) {
             return (long long)(A.X - O.X) * (B.Y - O.Y) - (long long)(A.Y - O.Y) * (B.X - O.X);
         }
 
-        // ¼ÆËãÍ¹°ü (Monotone Chain Algorithm)
+        // è®¡ç®—å‡¸åŒ… (Monotone Chain Algorithm)
         std::vector<PointInt32> convexHull(std::vector<PointInt32>& points) {
             size_t n = points.size();
             if (n <= 3) { return points; }
@@ -500,7 +500,7 @@ namespace {
             });
 
             std::vector<PointInt32> hull;
-            // ¹¹½¨ÏÂÍ¹°ü
+            // æ„å»ºä¸‹å‡¸åŒ…
             for (size_t i = 0; i < n; i++) {
                 while (hull.size() >= 2 && cross_product(hull[hull.size() - 2], hull.back(), points[i]) <= 0) {
                     hull.pop_back();
@@ -508,7 +508,7 @@ namespace {
                 hull.push_back(points[i]);
             }
 
-            // ¹¹½¨ÉÏÍ¹°ü
+            // æ„å»ºä¸Šå‡¸åŒ…
             for (size_t i = n - 2, t = hull.size() + 1; i != -1; i--) {
                 while (hull.size() >= t && cross_product(hull[hull.size() - 2], hull.back(), points[i]) <= 0) {
                     hull.pop_back();
@@ -516,36 +516,38 @@ namespace {
                 hull.push_back(points[i]);
             }
 
-            hull.pop_back(); // ×îºóÒ»¸öµãÊÇÖØ¸´µÄ
+            hull.pop_back(); // æœ€åä¸€ä¸ªç‚¹æ˜¯é‡å¤çš„
             return hull;
         }
 
-        // ¼ÆËãÁ½µã¼ä¾àÀëµÄÆ½·½
+        // è®¡ç®—ä¸¤ç‚¹é—´è·ç¦»çš„å¹³æ–¹
         double distSq(Point p1, Point p2) {
             return (p1.X - p2.X) * (p1.X - p2.X) + (p1.Y - p2.Y) * (p1.Y - p2.Y);
         }
 
-        // Ğı×ª¿¨³ß·¨Ñ°ÕÒ×îĞ¡Íâ½Ó¾ØĞÎ£¬·µ»Ø×îĞ¡Íâ½Ó¾ØĞÎµÄĞı×ª¾ØĞÎ²ÎÊı
-        RotatedRect getMinimumBoundingRectangle(std::vector<PointInt32> const& hull) {
+        // æ—‹è½¬å¡å°ºæ³•å¯»æ‰¾æœ€å°å¤–æ¥çŸ©å½¢ï¼Œè¿”å›æœ€å°å¤–æ¥çŸ©å½¢çš„æ—‹è½¬çŸ©å½¢å‚æ•°
+        template <typename T>
+        RotatedRect getMinimumBoundingRectangleImpl(std::span<T const> hull) {
+            // TODO: Optimize to O(n)
             double minArea = std::numeric_limits<double>::max();
             RotatedRect bestRect{};
             size_t n = hull.size();
-            if (n < 3) { return {}; } // ÎŞ·¨ĞÎ³É¾ØĞÎ
+            if (n < 3) { return {}; } // æ— æ³•å½¢æˆçŸ©å½¢
 
             for (size_t i = 0; i < n; i++) {
-                PointInt32 p1 = hull[i];
-                PointInt32 p2 = hull[(i + 1) % n];
+                T p1 = hull[i];
+                T p2 = hull[(i + 1) % n];
 
-                // ±ßµÄ·½ÏòÏòÁ¿
+                // è¾¹çš„æ–¹å‘å‘é‡
                 double edge_dx = p2.X - p1.X;
                 double edge_dy = p2.Y - p1.Y;
                 double edge_len = std::sqrt(edge_dx * edge_dx + edge_dy * edge_dy);
                 if (edge_len == 0) { continue; }
 
-                // µ¥Î»·½ÏòÏòÁ¿
+                // å•ä½æ–¹å‘å‘é‡
                 double ux = edge_dx / edge_len;
                 double uy = edge_dy / edge_len;
-                // µ¥Î»·¨ÏòÁ¿
+                // å•ä½æ³•å‘é‡
                 double vx = -uy;
                 double vy = ux;
 
@@ -568,17 +570,41 @@ namespace {
 
                 if (area < minArea) {
                     minArea = area;
-                    // ¼ÆËãÖĞĞÄµã
+                    // è®¡ç®—ä¸­å¿ƒç‚¹
                     double cx = p1.X + (min_proj_edge + width / 2) * ux + (min_proj_norm + height / 2) * vx;
                     double cy = p1.Y + (min_proj_edge + width / 2) * uy + (min_proj_norm + height / 2) * vy;
-                    // Ğı×ª½Ç¶È£¨ÒÔxÖáÎª»ù×¼£¬ÄæÊ±Õë£¬»¡¶È£©
+                    // æ—‹è½¬è§’åº¦ï¼ˆä»¥xè½´ä¸ºåŸºå‡†ï¼Œé€†æ—¶é’ˆï¼Œå¼§åº¦ï¼‰
+                    // Need to limit rotation angle to [-Ï€/4, Ï€/4], and / or swap the width and height accordingly
+                    if (ux < 0) {
+                        ux = -ux; // Ensure ux is non-negative
+                        uy = -uy; // Adjust uy accordingly
+                    }
+                    if (std::fabs(uy) > ux) {
+                        std::swap(width, height);
+                        if (uy < 0) {
+                            // Rotate 90 degrees counter-clockwise
+                            std::tie(ux, uy) = std::make_pair(-uy, ux);
+                        }
+                        else {
+                            // Rotate 90 degrees clockwise
+                            std::tie(ux, uy) = std::make_pair(uy, -ux);
+                        }
+                    }
                     float angle = static_cast<float>(std::atan2(uy, ux));
                     bestRect.center = { static_cast<float>(cx), static_cast<float>(cy) };
                     bestRect.size = { static_cast<float>(width), static_cast<float>(height) };
-                    bestRect.radius = angle;
+                    bestRect.radian = angle;
                 }
             }
             return bestRect;
+        }
+
+        RotatedRect getMinimumBoundingRectangle(std::span<PointInt32 const> hull) {
+            return getMinimumBoundingRectangleImpl(hull);
+        }
+
+        RotatedRect getMinimumBoundingRectangle(std::span<Point const> hull) {
+            return getMinimumBoundingRectangleImpl(hull);
         }
     }
 
@@ -587,8 +613,8 @@ namespace {
         float halfWidth = rect.size.Width * 0.5f;
         float halfHeight = rect.size.Height * 0.5f;
         // Precompute sin/cos
-        float cosTheta = std::cos(rect.radius);
-        float sinTheta = std::sin(rect.radius);
+        float cosTheta = std::cos(rect.radian);
+        float sinTheta = std::sin(rect.radian);
         // Define unrotated corners relative to center
         constexpr int dx[4] = { -1,  1,  1, -1 };
         constexpr int dy[4] = { -1, -1,  1,  1 };
@@ -605,10 +631,10 @@ namespace {
 }
 
 /// <summary>
-/// ²éÕÒÍ¼ÏñÖĞµÄÂÖÀªÇøÓò£¬·µ»ØÃ¿¸öÇøÓòµÄÍâ½Ó°üÎ§ºĞ¡£
+/// æŸ¥æ‰¾å›¾åƒä¸­çš„è½®å»“åŒºåŸŸï¼Œè¿”å›æ¯ä¸ªåŒºåŸŸçš„å¤–æ¥åŒ…å›´ç›’ã€‚
 /// <typeparam name="F">fn(RotatedRect)</typeparam>
 /// <param name="mask"></param>
-/// <param name="f">»Øµ÷£¬Ã¿¸öÇøÓòµ÷ÓÃÒ»´Î</param>
+/// <param name="f">å›è°ƒï¼Œæ¯ä¸ªåŒºåŸŸè°ƒç”¨ä¸€æ¬¡</param>
 template <typename F>
 void FindBoundingBoxes(BinaryMask const& mask, F&& f) {
     // Step 1: Find connected components (regions) in the mask
@@ -625,6 +651,138 @@ void FindBoundingBoxes(BinaryMask const& mask, F&& f) {
         auto minRect = Geometry::getMinimumBoundingRectangle(hull);
         f(std::move(minRect));
     }
+}
+
+/// <summary>
+/// Implements perspective transform.
+/// </summary>
+/// <param name="srcBitmap"></param>
+/// <param name="srcQuad">
+///   The region to copy from the bitmap. If region exceeds the bounds of the source bitmap,
+///   black will be sampled.
+/// </param>
+/// <param name="dstWidth"></param>
+/// <param name="dstHeight"></param>
+/// <returns></returns>
+com_ptr<IWICBitmap> QuadToQuadTransform(
+    IWICBitmap* srcBitmap,
+    Quad const& srcQuad,
+    UINT dstWidth,
+    UINT dstHeight
+) {
+    // Get source bitmap properties
+    UINT srcWidth, srcHeight;
+    check_hresult(srcBitmap->GetSize(&srcWidth, &srcHeight));
+    WICPixelFormatGUID srcPixelFormat;
+    check_hresult(srcBitmap->GetPixelFormat(&srcPixelFormat));
+
+    // Lock source bitmap for reading
+    com_ptr<IWICBitmapLock> srcLock;
+    WICRect srcRect{ 0, 0, (INT)srcWidth, (INT)srcHeight };
+    check_hresult(srcBitmap->Lock(&srcRect, WICBitmapLockRead, srcLock.put()));
+    UINT srcStride;
+    check_hresult(srcLock->GetStride(&srcStride));
+    UINT srcBufferSize;
+    BYTE* srcData;
+    check_hresult(srcLock->GetDataPointer(&srcBufferSize, &srcData));
+
+    // Create destination bitmap
+    static auto factory = create_instance<IWICImagingFactory>(CLSID_WICImagingFactory, CLSCTX_INPROC_SERVER);
+    com_ptr<IWICBitmap> dstBitmap;
+    check_hresult(factory->CreateBitmap(dstWidth, dstHeight, srcPixelFormat, WICBitmapCacheOnDemand, dstBitmap.put()));
+
+    // Lock destination bitmap for writing
+    com_ptr<IWICBitmapLock> dstLock;
+    WICRect dstRect{ 0, 0, (INT)dstWidth, (INT)dstHeight };
+    check_hresult(dstBitmap->Lock(&dstRect, WICBitmapLockWrite, dstLock.put()));
+    UINT dstStride;
+    check_hresult(dstLock->GetStride(&dstStride));
+    UINT dstBufferSize;
+    BYTE* dstData;
+    check_hresult(dstLock->GetDataPointer(&dstBufferSize, &dstData));
+
+    // Define destination quad (a rectangle)
+    Point dstPoints[4] = {
+        {0.0f, 0.0f},
+        {(float)dstWidth, 0.0f},
+        {(float)dstWidth, (float)dstHeight},
+        {0.0f, (float)dstHeight}
+    };
+
+    // Setup equations to solve for the perspective transform matrix (homography)
+    // We are solving for the inverse transform (destination to source)
+    float p[8][9] = {
+        {-dstPoints[0].X, -dstPoints[0].Y, -1, 0, 0, 0, dstPoints[0].X * srcQuad.corners[0].X, dstPoints[0].Y * srcQuad.corners[0].X, -srcQuad.corners[0].X},
+        {0, 0, 0, -dstPoints[0].X, -dstPoints[0].Y, -1, dstPoints[0].X * srcQuad.corners[0].Y, dstPoints[0].Y * srcQuad.corners[0].Y, -srcQuad.corners[0].Y},
+        {-dstPoints[1].X, -dstPoints[1].Y, -1, 0, 0, 0, dstPoints[1].X * srcQuad.corners[1].X, dstPoints[1].Y * srcQuad.corners[1].X, -srcQuad.corners[1].X},
+        {0, 0, 0, -dstPoints[1].X, -dstPoints[1].Y, -1, dstPoints[1].X * srcQuad.corners[1].Y, dstPoints[1].Y * srcQuad.corners[1].Y, -srcQuad.corners[1].Y},
+        {-dstPoints[2].X, -dstPoints[2].Y, -1, 0, 0, 0, dstPoints[2].X * srcQuad.corners[2].X, dstPoints[2].Y * srcQuad.corners[2].X, -srcQuad.corners[2].X},
+        {0, 0, 0, -dstPoints[2].X, -dstPoints[2].Y, -1, dstPoints[2].X * srcQuad.corners[2].Y, dstPoints[2].Y * srcQuad.corners[2].Y, -srcQuad.corners[2].Y},
+        {-dstPoints[3].X, -dstPoints[3].Y, -1, 0, 0, 0, dstPoints[3].X * srcQuad.corners[3].X, dstPoints[3].Y * srcQuad.corners[3].X, -srcQuad.corners[3].X},
+        {0, 0, 0, -dstPoints[3].X, -dstPoints[3].Y, -1, dstPoints[3].X * srcQuad.corners[3].Y, dstPoints[3].Y * srcQuad.corners[3].Y, -srcQuad.corners[3].Y},
+    };
+
+    // Gaussian elimination to solve for the matrix coefficients
+    for (int i = 0; i < 8; i++) {
+        int max_row = i;
+        for (int k = i + 1; k < 8; k++) {
+            if (abs(p[k][i]) > abs(p[max_row][i])) {
+                max_row = k;
+            }
+        }
+        std::swap(p[i], p[max_row]);
+
+        for (int k = i + 1; k < 8; k++) {
+            float factor = p[k][i] / p[i][i];
+            for (int j = i; j < 9; j++) {
+                p[k][j] -= factor * p[i][j];
+            }
+        }
+    }
+
+    float h[9];
+    for (int i = 7; i >= 0; i--) {
+        h[i] = p[i][8];
+        for (int j = i + 1; j < 8; j++) {
+            h[i] -= p[i][j] * h[j];
+        }
+        h[i] /= p[i][i];
+    }
+    h[8] = 1; // The last element of the homography matrix is 1
+
+    // Apply the transform with bilinear interpolation
+    for (UINT v = 0; v < dstHeight; ++v) {
+        for (UINT u = 0; u < dstWidth; ++u) {
+            float denominator = h[6] * u + h[7] * v + h[8];
+            float srcX = (h[0] * u + h[1] * v + h[2]) / denominator;
+            float srcY = (h[3] * u + h[4] * v + h[5]) / denominator;
+
+            if (srcX >= 0 && srcX < srcWidth - 1 && srcY >= 0 && srcY < srcHeight - 1) {
+                int x1 = static_cast<int>(srcX);
+                int y1 = static_cast<int>(srcY);
+                int x2 = x1 + 1;
+                int y2 = y1 + 1;
+
+                float dx = srcX - x1;
+                float dy = srcY - y1;
+
+                BYTE* p11 = srcData + y1 * srcStride + x1 * 4;
+                BYTE* p12 = srcData + y2 * srcStride + x1 * 4;
+                BYTE* p21 = srcData + y1 * srcStride + x2 * 4;
+                BYTE* p22 = srcData + y2 * srcStride + x2 * 4;
+
+                BYTE* dstPixel = dstData + v * dstStride + u * 4;
+
+                for (int i = 0; i < 4; ++i) { // BGRA channels
+                    float c1 = p11[i] * (1 - dx) + p21[i] * dx;
+                    float c2 = p12[i] * (1 - dx) + p22[i] * dx;
+                    dstPixel[i] = static_cast<BYTE>(c1 * (1 - dy) + c2 * dy);
+                }
+            }
+        }
+    }
+
+    return dstBitmap;
 }
 
 #define BEGIN_NAMESPACE(x) namespace x {
@@ -968,6 +1126,11 @@ void TextRecognizer::InitDict(hstring const& dictPath) {
     m_ctcDict = std::move(ctcDict);
 }
 
+TextRecognitionOutput PPOcr::do_ocr(SoftwareBitmap const& image) {
+    // TODO: do_ocr
+    throw hresult_not_implemented();
+}
+
 END_NAMESPACE
 
 void PPOcr::GlobalInit() {
@@ -1003,4 +1166,21 @@ IAsyncOperation<IVector<hstring>> PPOcr::EnumerateD3D12DevicesAsync() {
 LearningModelDevice PPOcr::CreateLearningModelDevice(hstring const& device) {
     auto d3dDevice = PickD3D12DeviceForML(device);
     return CreateLearningModelDevice(d3dDevice);
+}
+
+SoftwareBitmap PPOcr::ExtractQuadFromBitmap(SoftwareBitmap const& src, Quad const& quad) {
+    auto wicBmp = SoftwareBitmapToWICBitmap(src);
+    auto horizontalLength = std::fabs(quad.corners[0].X - quad.corners[1].X) +
+        std::fabs(quad.corners[2].X - quad.corners[3].X);
+    auto verticalLength = std::fabs(quad.corners[0].Y - quad.corners[3].Y) +
+        std::fabs(quad.corners[1].Y - quad.corners[2].Y);
+    auto [dstWidth, dstHeight] = Geometry::getMinimumBoundingRectangle(quad.corners).size;
+    // getMinimumBoundingRectangle tends to return a rectangle with rotation within [-Ï€/4, Ï€/4],
+    // so we must manually recover the original orientation.
+    if ((horizontalLength < verticalLength) != (dstWidth < dstHeight)) {
+        // Swap width and height if the orientation is different
+        std::swap(dstWidth, dstHeight);
+    }
+    wicBmp = QuadToQuadTransform(wicBmp.get(), quad, UINT(dstWidth + 0.5f), UINT(dstHeight + 0.5f));
+    return ToSoftwareBitmap(wicBmp.get());
 }

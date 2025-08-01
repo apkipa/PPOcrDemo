@@ -108,6 +108,47 @@ namespace winrt::PPOcrDemo::implementation {
         LoadInputImageFromDataPackageAsync(Clipboard::GetContent());
     }
 
+    void MainPage::OcrDetectionLayoutRoot_RightTapped(IInspectable const& sender, RightTappedRoutedEventArgs const& e) {
+        auto originalSource = e.OriginalSource().try_as<Shapes::Polygon>();
+        if (!originalSource) {
+            return;
+        }
+
+        e.Handled(true);
+
+        // Extract the polygon data
+        auto points = originalSource.Points();
+        PPOcr::Quad quad{};
+        for (uint32_t i = 0; i < 4 && i < points.Size(); ++i) {
+            quad.corners[i] = points.GetAt(i);
+        }
+
+        if (false) {
+            auto quadWidth = std::hypot(quad.corners[1].X - quad.corners[0].X, quad.corners[1].Y - quad.corners[0].Y);
+            auto quadHeight = std::hypot(quad.corners[3].X - quad.corners[0].X, quad.corners[3].Y - quad.corners[0].Y);
+            if (quadHeight / quadWidth >= 1.2) {
+                // Handle vertical text
+                std::rotate(std::begin(quad.corners), std::begin(quad.corners) + 1, std::end(quad.corners));
+            }
+        }
+
+        // Extract the image from quad
+        auto imgQuad = PPOcr::ExtractQuadFromBitmap(m_inputImage, quad);
+        auto imgSrc = SoftwareBitmapSource();
+        std::ignore = imgSrc.SetBitmapAsync(imgQuad);
+
+        // Show context menu
+        Flyout menu;
+        Image imgCtrl;
+        imgCtrl.Source(imgSrc);
+        menu.Content(imgCtrl);
+        Primitives::FlyoutShowOptions menuShowOptions;
+        auto cursorPos = e.GetPosition(originalSource);
+        cursorPos.Y -= 16.0f;
+        menuShowOptions.Position(cursorPos);
+        menu.ShowAt(originalSource, menuShowOptions);
+    }
+
     void MainPage::StartOcrButton_Click(IInspectable const& sender, RoutedEventArgs const& e) {
         DoOcrAsync(false);
     }
@@ -266,9 +307,10 @@ namespace winrt::PPOcrDemo::implementation {
             co_return;
         }
 
-        // TODO: Implement optimizeModelIO
-
         auto loadSess = MakeLoadSession();
+
+        m_textDetector.set_optimize_resource(optimizeModelIO);
+        m_textRecognizer.set_optimize_resource(optimizeModelIO);
 
         try {
             auto dq = DispatcherQueue::GetForCurrentThread();
@@ -285,12 +327,69 @@ namespace winrt::PPOcrDemo::implementation {
                 auto source = SoftwareBitmapSource();
                 co_await source.SetBitmapAsync(output);
 
-                OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+                OcrTimingTextBlock().Text(winrt::format(L"推理耗时: {:.3f} ms", timing));
                 OcrInputMaskImage().Source(source);
             }
             else if (isTextDetectionEnabled && isTextRecognitionEnabled) {
                 // Both text detection and recognition enabled
+                PPOcr::TextRecognitionOutput output;
+                if (optimizeModelIO) {
+                    auto ocr = PPOcr::PPOcr();
+                    ocr.set_text_detector(m_textDetector);
+                    ocr.set_text_recognizer(m_textRecognizer);
+                    output = ocr.do_ocr(m_inputImage);
+                }
+                else {
+                    // Handle manually
+                    auto textQuads = m_textDetector.detect(m_inputImage);
+                    size_t totalProgress = size(textQuads);
+                    size_t currentProgress{};
+                    auto updateProgressFn = [&] {
+                        dq.TryEnqueue([this, msg = winrt::format(L"进度: {} / {}", ++currentProgress, totalProgress)] {
+                            OcrTimingTextBlock().Text(msg);
+                        });
+                    };
+                    dq.TryEnqueue([this, textQuads] {
+                        MarkDetectionQuads(textQuads);
+                    });
+                    updateProgressFn();
+                    for (auto& quad : textQuads) {
+                        auto quadWidth = std::hypot(quad.corners[1].X - quad.corners[0].X, quad.corners[1].Y - quad.corners[0].Y);
+                        auto quadHeight = std::hypot(quad.corners[3].X - quad.corners[0].X, quad.corners[3].Y - quad.corners[0].Y);
+                        if (quadHeight / quadWidth >= 1.2) {
+                            // Handle vertical text
+                            std::rotate(std::begin(quad.corners), std::begin(quad.corners) + 1, std::end(quad.corners));
+                        }
+                        auto img = PPOcr::ExtractQuadFromBitmap(m_inputImage, quad);
+                        auto singleOutput = m_textRecognizer.recognize(img);
+                        output.entries.push_back({ std::move(singleOutput), quad });
+                        updateProgressFn();
+                    }
+                }
+
                 auto t1 = std::chrono::high_resolution_clock::now();
+                auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
+                co_await resume_foreground(dq);
+
+                OcrTimingTextBlock().Text(winrt::format(L"推理耗时: {:.3f} ms", timing));
+
+                std::wstring outputText;
+                for (auto& entry : output.entries) {
+                    auto& quad = entry.bounding_box;
+                    outputText += std::format(
+                        L"{:.3f} [({:.2f}, {:.2f}), ({:.2f}, {:.2f}), ({:.2f}, {:.2f}), ({:.2f}, {:.2f})]:\n{}\n",
+                        entry.confidence,
+                        quad.corners[0].X, quad.corners[0].Y,
+                        quad.corners[1].X, quad.corners[1].Y,
+                        quad.corners[2].X, quad.corners[2].Y,
+                        quad.corners[3].X, quad.corners[3].Y,
+                        entry.text
+                    );
+                }
+                if (!outputText.empty()) {
+                    outputText.pop_back(); // Remove the last newline character
+                }
+                OcrOutputTextBox().Text(outputText);
             }
             else if (isTextDetectionEnabled && !isTextRecognitionEnabled) {
                 // Only text detection enabled
@@ -299,7 +398,7 @@ namespace winrt::PPOcrDemo::implementation {
                 auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
                 dq.TryEnqueue([this, self = std::move(self), timing, output = std::move(output)] {
-                    OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+                    OcrTimingTextBlock().Text(winrt::format(L"推理耗时: {:.3f} ms", timing));
 
                     std::wstring outputText;
                     for (auto quad : output) {
@@ -325,7 +424,7 @@ namespace winrt::PPOcrDemo::implementation {
                 auto timing = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
                 dq.TryEnqueue([this, self = std::move(self), timing, output = std::move(output)] {
-                    OcrTimingTextBlock().Text(std::format(L"推理耗时: {:.3f} ms", timing));
+                    OcrTimingTextBlock().Text(winrt::format(L"推理耗时: {:.3f} ms", timing));
 
                     std::wstring outputText;
                     outputText += std::format(L"{:.3f}:\n{}\n", output.confidence, output.text);
@@ -354,13 +453,23 @@ namespace winrt::PPOcrDemo::implementation {
         layoutRoot.Width(canvasWidth);
         layoutRoot.Height(canvasHeight);
 
-        auto brush = SolidColorBrush();
-        brush.Color(Colors::MediumPurple());
+        auto polyBrush = SolidColorBrush();
+        polyBrush.Color(Colors::MediumPurple());
+        auto edgeBrush = SolidColorBrush();
+        edgeBrush.Color(Colors::Red());
         for (auto& quad : quads) {
             Shapes::Polygon polygon;
-            polygon.Fill(brush);
+            polygon.Fill(polyBrush);
             polygon.Points().ReplaceAll(quad.corners);
             layoutRootChildren.Append(polygon);
+            Shapes::Line leftEdge;
+            leftEdge.Stroke(edgeBrush);
+            leftEdge.StrokeThickness(2.0);
+            leftEdge.X1(quad.corners[0].X);
+            leftEdge.Y1(quad.corners[0].Y);
+            leftEdge.X2(quad.corners[1].X);
+            leftEdge.Y2(quad.corners[1].Y);
+            layoutRootChildren.Append(leftEdge);
         }
     }
 }

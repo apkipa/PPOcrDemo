@@ -65,6 +65,10 @@ namespace PPOcr {
             m_session = nullptr; // Reset session to reinitialize with new device
         }
 
+        void set_optimize_resource(bool optimize) {
+            m_optimizeResource = optimize;
+        }
+
         std::vector<Quad> detect(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
         winrt::Windows::Graphics::Imaging::SoftwareBitmap detect_mask(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
 
@@ -77,6 +81,7 @@ namespace PPOcr {
         mam::LearningModelSession m_session{ nullptr };
         winrt::hstring m_inTensorName, m_outTensorName;
         mam::TensorFloat m_inTensor{ nullptr }, m_outTensor{ nullptr };
+        bool m_optimizeResource{ false };
     };
 
     struct TextRecognizer {
@@ -88,6 +93,10 @@ namespace PPOcr {
         void set_device(mam::LearningModelDevice const& device) {
             m_device = device;
             m_session = nullptr; // Reset session to reinitialize with new device
+        }
+
+        void set_optimize_resource(bool optimize) {
+            m_optimizeResource = optimize;
         }
 
         TextRecognitionFragment recognize(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
@@ -103,6 +112,7 @@ namespace PPOcr {
         mam::LearningModelSession m_session{ nullptr };
         winrt::hstring m_inTensorName, m_outTensorName;
         mam::TensorFloat m_inTensor{ nullptr }, m_outTensor{ nullptr };
+        bool m_optimizeResource{ false };
     };
 
     struct PPOcr {
@@ -113,8 +123,17 @@ namespace PPOcr {
             m_recognizer.set_device(device);
         }
 
-        void set_text_detector(TextDetector const& detector);
-        void set_text_recognizer(TextRecognizer const& recognizer);
+        void set_optimize_resource(bool optimize) {
+            m_detector.set_optimize_resource(optimize);
+            m_recognizer.set_optimize_resource(optimize);
+        }
+
+        void set_text_detector(TextDetector const& detector) {
+            m_detector = detector;
+        }
+        void set_text_recognizer(TextRecognizer const& recognizer) {
+            m_recognizer = recognizer;
+        }
 
         TextRecognitionOutput do_ocr(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& image);
 
@@ -127,5 +146,5 @@ namespace PPOcr {
     std::vector<winrt::hstring> EnumerateD3D12Devices();
     winrt::Windows::Foundation::IAsyncOperation<winrt::Windows::Foundation::Collections::IVector<winrt::hstring>> EnumerateD3D12DevicesAsync();
     mam::LearningModelDevice CreateLearningModelDevice(winrt::hstring const& device);
-
+    winrt::Windows::Graphics::Imaging::SoftwareBitmap ExtractQuadFromBitmap(winrt::Windows::Graphics::Imaging::SoftwareBitmap const& src, Quad const& quad);
 }

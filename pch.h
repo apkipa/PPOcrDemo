@@ -39,6 +39,7 @@
 
 #include <windows.graphics.imaging.interop.h>
 
+#include <d2d1_3.h>
 #include <d3d12.h>
 #include <dxgi1_2.h>
 #include <dxcore.h>
